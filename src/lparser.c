@@ -3217,10 +3217,80 @@ static void statement (LexState *ls) {
       funcstat(ls, line);
       break;
     }
-    case TK_LOCAL: {  /* stat -> localstat */
+    case TK_LOCAL: {  /* stat -> localstat | destructuring */
       luaX_next(ls);  /* skip LOCAL */
       if (testnext(ls, TK_FUNCTION))  /* local function? */
         localfunc(ls);
+      else if (ls->t.token == '{') {
+        /* table destructuring: local {a, b, c} = expr
+           Compiles to: local __tmp = expr; local a=__tmp.a; local b=__tmp.b; ... */
+        FuncState *fs = ls->fs;
+        TString *names[MAXVARS];
+        int nnames = 0;
+        int i;
+        luaX_next(ls);  /* skip '{' */
+        do {
+          if (nnames >= MAXVARS)
+            luaK_semerror(ls, "too many variables in destructuring");
+          names[nnames++] = str_checkname(ls);
+        } while (testnext(ls, ','));
+        checknext(ls, '}');
+        checknext(ls, '=');
+        /* create hidden temp var for the source table */
+        TString *tmpname = luaX_newstring(ls, "(destructure)", 13);
+        new_localvar(ls, tmpname);
+        expdesc src;
+        expr(ls, &src);
+        adjust_assign(ls, 1, 1, &src);
+        adjustlocalvars(ls, 1);  /* __tmp is now active */
+        int tmpreg = getlocalvardesc(fs, fs->nactvar - 1)->vd.ridx;
+        /* create locals for each field */
+        for (i = 0; i < nnames; i++)
+          new_localvar(ls, names[i]);
+        /* extract fields: each local = __tmp.fieldname */
+        for (i = 0; i < nnames; i++) {
+          expdesc tab, key;
+          init_exp(&tab, VNONRELOC, tmpreg);
+          codestring(&key, names[i]);
+          luaK_indexed(fs, &tab, &key);
+          luaK_exp2nextreg(fs, &tab);
+        }
+        adjustlocalvars(ls, nnames);
+      }
+      else if (ls->t.token == '[') {
+        /* array destructuring: local [a, b, c] = expr */
+        FuncState *fs = ls->fs;
+        TString *names[MAXVARS];
+        int nnames = 0;
+        luaX_next(ls);  /* skip '[' */
+        do {
+          if (nnames >= MAXVARS)
+            luaK_semerror(ls, "too many variables in destructuring");
+          names[nnames++] = str_checkname(ls);
+        } while (testnext(ls, ','));
+        checknext(ls, ']');
+        checknext(ls, '=');
+        /* Step 1: local __tmp = expr */
+        int ai;
+        TString *atmp = luaX_newstring(ls, "(destructure)", 13);
+        new_localvar(ls, atmp);
+        expdesc asrc;
+        expr(ls, &asrc);
+        luaK_exp2nextreg(fs, &asrc);
+        adjustlocalvars(ls, 1);
+        int areg = getlocalvardesc(fs, fs->nactvar - 1)->vd.ridx;
+        /* Step 2: for each name, emit GETI and create local */
+        for (ai = 0; ai < nnames; ai++) {
+          new_localvar(ls, names[ai]);
+          /* emit: R[freereg] = R[areg][ai+1] */
+          int dest = fs->freereg;
+          luaK_codeABC(fs, OP_GETI, dest, areg, ai + 1);
+          luaK_reserveregs(fs, 1);
+          adjustlocalvars(ls, 1);
+          /* fix: the local's startpc should include this GETI */
+          localdebuginfo(fs, fs->nactvar - 1)->startpc = fs->pc - 1;
+        }
+      }
       else
         localstat(ls);
       break;
