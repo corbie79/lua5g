@@ -425,9 +425,68 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
   ** Register mapping:
   **   rbx = count, r8 = step, r9 = control variable (i)
   */
+  /*
+  ** Register promotion: scan body to find accumulator slots.
+  ** A slot that is both read and written in the same instruction
+  ** (e.g., ADD R[1], R[1], R[4]) is an accumulator candidate.
+  ** Pin up to 2 accumulators to r12, r13 (callee-saved).
+  ** The loop variable R[A+2] is already pinned to r9.
+  */
+  #define MAX_PINNED 2
+  int pinned_slot[MAX_PINNED];   /* Lua register index */
+  int pinned_cpureg[MAX_PINNED]; /* CPU register: 6=r12, 7=r13 (mapped) */
+  int npinned = 0;
+  /* r12 = cpu_reg 6, r13 = cpu_reg 7 in our mapping */
+  /* Actually: let's use r14=index 14, r15=index 15 approach differently */
+  /* Simpler: pin accumulators directly. Scan: */
+  {
+    int slot_rw[256] = {0};  /* bitmask: 1=read, 2=write */
+    for (i = pc + 1; i < loop_end_pc; i++) {
+      OpCode op = GET_OPCODE(code[i]);
+      int a = GETARG_A(code[i]);
+      switch (op) {
+        case OP_ADD: case OP_SUB: case OP_MUL: {
+          int b = GETARG_B(code[i]);
+          int c = GETARG_C(code[i]);
+          slot_rw[b] |= 1; slot_rw[c] |= 1; slot_rw[a] |= 2;
+          break;
+        }
+        case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK: {
+          int b = GETARG_B(code[i]);
+          slot_rw[b] |= 1; slot_rw[a] |= 2;
+          break;
+        }
+        default: break;
+      }
+    }
+    /* find slots that are both read AND written (accumulators) */
+    for (i = 0; i < 256 && npinned < MAX_PINNED; i++) {
+      if (i == ra_for || i == ra_for + 1 || i == ra_for + 2)
+        continue;  /* skip for-loop control slots (already handled) */
+      if (slot_rw[i] == 3) {  /* both read and written */
+        pinned_slot[npinned] = i;
+        npinned++;
+      }
+    }
+  }
+
   jit_emit_load_slot(&em, 3, ra_for);      /* rbx = R[A] (count) */
   jit_emit_load_slot(&em, 4, ra_for + 1);  /* r8 = R[A+1] (step) */
   jit_emit_load_slot(&em, 5, ra_for + 2);  /* r9 = R[A+2] (control/i) */
+
+  /* Load pinned accumulators into r14, r15 */
+  /* r14 = cpu_reg index we'll emit manually */
+  if (npinned >= 1) {
+    /* mov r14, [rdi + slot*SLOT_SIZE] */
+    emit2(&em, 0x4C, 0x8B);  /* REX.WR + mov */
+    emit1(&em, 0xB7);        /* mod=10 reg=r14(110) rm=rdi(111) */
+    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
+  }
+  if (npinned >= 2) {
+    emit2(&em, 0x4C, 0x8B);
+    emit1(&em, 0xBF);        /* mod=10 reg=r15(111) rm=rdi(111) */
+    emit_u32(&em, (unsigned int)(pinned_slot[1] * (int)SLOT_SIZE));
+  }
 
   /* === Check: if count < 0, skip loop (forprep sets -1 if skip) === */
   {
@@ -459,10 +518,42 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: {
         int b = GETARG_B(inst);
         int c = GETARG_C(inst);
-        jit_emit_load_slot(&em, 0, b);
-        jit_emit_load_slot(&em, 1, c);
-        jit_emit_addi(&em, 0, 0, 1);
-        jit_emit_store_slot(&em, a, 0);
+        /* check if operands are pinned or loop var */
+        if (npinned >= 1 && a == pinned_slot[0] && b == pinned_slot[0]
+            && c == ra_for + 2) {
+          /* r14 += r9 (accumulator += loop var, pure register!) */
+          unsigned char bb[] = {0x4D, 0x01, 0xCE}; /* add r14, r9 */
+          emit_bytes(&em, bb, 3);
+        }
+        else if (npinned >= 1 && a == pinned_slot[0] && c == pinned_slot[0]
+                 && b == ra_for + 2) {
+          /* r14 += r9 (reversed operands) */
+          unsigned char bb[] = {0x4D, 0x01, 0xCE};
+          emit_bytes(&em, bb, 3);
+        }
+        else {
+          /* generic: load, add, store */
+          if (b == ra_for + 2)
+            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xC8); } /* mov rax, r9 */
+          else if (npinned >= 1 && b == pinned_slot[0])
+            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF0); } /* mov rax, r14 */
+          else
+            jit_emit_load_slot(&em, 0, b);
+
+          if (c == ra_for + 2)
+            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xC9); } /* mov rcx, r9 */
+          else if (npinned >= 1 && c == pinned_slot[0])
+            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF1); } /* mov rcx, r14 */
+          else
+            jit_emit_load_slot(&em, 1, c);
+
+          jit_emit_addi(&em, 0, 0, 1);
+
+          if (npinned >= 1 && a == pinned_slot[0])
+            { emit2(&em, 0x49, 0x89); emit1(&em, 0xC6); } /* mov r14, rax */
+          else
+            jit_emit_store_slot(&em, a, 0);
+        }
         break;
       }
       case OP_SUB: {
@@ -581,8 +672,20 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
   jit_emit_patch_jump(&em, skip_patch);
 
   /* === Store final values back to Lua stack === */
-  jit_emit_store_slot(&em, ra_for, 3);      /* R[A] = count (should be 0) */
+  jit_emit_store_slot(&em, ra_for, 3);      /* R[A] = count */
   jit_emit_store_slot(&em, ra_for + 2, 5);  /* R[A+2] = final i */
+  /* Store pinned accumulators back */
+  if (npinned >= 1) {
+    /* mov [rdi + slot*SLOT], r14 */
+    emit2(&em, 0x4C, 0x89);
+    emit1(&em, 0xB7);  /* mod=10 reg=r14 rm=rdi */
+    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
+  }
+  if (npinned >= 2) {
+    emit2(&em, 0x4C, 0x89);
+    emit1(&em, 0xBF);  /* mod=10 reg=r15 rm=rdi */
+    emit_u32(&em, (unsigned int)(pinned_slot[1] * (int)SLOT_SIZE));
+  }
 
   /* === Epilogue === */
   jit_emit_epilogue(&em);
@@ -632,6 +735,17 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       emit_bytes(&fem, b, 4);
       emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
 
+    /* Float register promotion: pin accumulator to xmm5.
+       Reuse the same npinned/pinned_slot from int analysis. */
+    /* If accumulator found, load into xmm5 before loop */
+    int fpinned = (npinned >= 1) ? pinned_slot[0] : -1;
+    if (fpinned >= 0) {
+      /* movsd xmm5, [rdi + slot*SLOT] */
+      unsigned char bb[] = {0xF2, 0x0F, 0x10, 0xAF};
+      emit_bytes(&fem, bb, 4);
+      emit_u32(&fem, (unsigned int)(fpinned * (int)SLOT_SIZE));
+    }
+
     /* === Loop top === */
     int floop_top = (int)fem.pos;
 
@@ -643,23 +757,43 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       switch (op) {
         case OP_ADD: case OP_SUB: case OP_MUL: {
           int b2 = GETARG_B(inst);
-          int c = GETARG_C(inst);
-          /* movsd xmm3, [rdi + b*SLOT] */
-          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
+          int c2 = GETARG_C(inst);
+          unsigned char opc;
+          if (op == OP_ADD) opc = 0x58;
+          else if (op == OP_SUB) opc = 0x5C;
+          else opc = 0x59;
+          /* Fast path: accumulator op loop_var → pure register */
+          if (fpinned >= 0 && a == fpinned && b2 == fpinned
+              && c2 == ra_for + 2) {
+            /* xmm5 op= xmm0 (accumulator += loop var) */
+            unsigned char bb[] = {0xF2, 0x0F, opc, 0xE8};
             emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
-          /* addsd/subsd/mulsd xmm3, [rdi + c*SLOT] (memory operand) */
-          { unsigned char opc;
-            if (op == OP_ADD) opc = 0x58;
-            else if (op == OP_SUB) opc = 0x5C;
-            else opc = 0x59; /* MUL */
-            unsigned char bb[] = {0xF2, 0x0F, opc, 0x9F};
+          }
+          else if (fpinned >= 0 && a == fpinned && c2 == fpinned
+                   && b2 == ra_for + 2 && op == OP_ADD) {
+            /* xmm5 += xmm0 (reversed, addition is commutative) */
+            unsigned char bb[] = {0xF2, 0x0F, 0x58, 0xE8};
             emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(c * (int)SLOT_SIZE)); }
-          /* movsd [rdi + a*SLOT], xmm3 */
-          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
-            emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+          }
+          else {
+            /* Generic: load from memory, op, store */
+            { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
+              emit_bytes(&fem, bb, 4);
+              emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
+            { unsigned char bb[] = {0xF2, 0x0F, opc, 0x9F};
+              emit_bytes(&fem, bb, 4);
+              emit_u32(&fem, (unsigned int)(c2 * (int)SLOT_SIZE)); }
+            if (fpinned >= 0 && a == fpinned) {
+              /* movsd xmm5, xmm3 */
+              unsigned char bb[] = {0xF2, 0x0F, 0x10, 0xEB};
+              emit_bytes(&fem, bb, 4);
+            }
+            else {
+              unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
+              emit_bytes(&fem, bb, 4);
+              emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE));
+            }
+          }
           break;
         }
         case OP_ADDI: {
@@ -723,6 +857,12 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
     { unsigned char b[] = {0xF2, 0x0F, 0x11, 0x87};
       emit_bytes(&fem, b, 4);
       emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
+    /* store pinned float accumulator (xmm5) back */
+    if (fpinned >= 0) {
+      unsigned char b[] = {0xF2, 0x0F, 0x11, 0xAF};  /* movsd [rdi+disp], xmm5 */
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)(fpinned * (int)SLOT_SIZE));
+    }
 
     jit_emit_epilogue(&fem);
     fcode_size = fem.pos;
