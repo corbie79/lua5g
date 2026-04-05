@@ -1618,6 +1618,50 @@ static void simpleexp (LexState *ls, expdesc *v) {
       body(ls, v, 0, ls->linenumber);
       return;
     }
+    case '|': {
+      /* lambda: |params| expr
+         Compiles to: function(params) return expr end */
+      FuncState new_fs;
+      BlockCnt bl;
+      int line = ls->linenumber;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      open_func(ls, &new_fs, &bl);
+      luaX_next(ls);  /* skip '|' */
+      /* parse parameter list */
+      int nparams = 0;
+      if (ls->t.token != '|') {
+        do {
+          new_localvar(ls, str_checkname(ls));
+          /* type annotation in lambda: ': type' but stop before '|' */
+          if (ls->t.token == ':') {
+            luaX_next(ls);  /* skip ':' */
+            /* parse simple type name only (no union with |) */
+            if (ls->t.token == TK_NAME || ls->t.token == TK_NIL ||
+                ls->t.token == TK_FUNCTION)
+              luaX_next(ls);
+            if (ls->t.token == '?') luaX_next(ls);
+          }
+          nparams++;
+        } while (testnext(ls, ','));
+      }
+      if (ls->t.token != '|')
+        luaX_syntaxerror(ls, "'|' expected to close lambda parameters");
+      luaX_next(ls);  /* skip closing '|' */
+      adjustlocalvars(ls, nparams);
+      new_fs.f->numparams = cast_byte(new_fs.nactvar);
+      luaK_reserveregs(&new_fs, new_fs.nactvar);
+      /* parse body expression */
+      expdesc e;
+      expr(ls, &e);
+      /* generate: return expr */
+      luaK_exp2nextreg(&new_fs, &e);
+      luaK_ret(&new_fs, new_fs.nactvar, 1);
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
     default: {
       suffixedexp(ls, v);
       return;
@@ -3057,6 +3101,88 @@ static void classstat (LexState *ls, int line) {
 }
 
 
+/*
+** matchstat -> MATCH expr { CASE expr THEN block } [CASE '_' THEN block] END
+** Compiles to equivalent if/elseif/else chain.
+*/
+static void matchstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  expdesc subject;
+  int jmp_end_list = NO_JUMP;
+
+  luaX_next(ls);  /* skip 'match' */
+
+  /* store subject in a local temporary variable */
+  expr(ls, &subject);
+  luaK_exp2nextreg(fs, &subject);
+  int reg = fs->freereg - 1;  /* register holding the subject */
+
+  /* parse case clauses */
+  while (ls->t.token == TK_NAME &&
+         strcmp(getstr(ls->t.seminfo.ts), "case") == 0) {
+    luaX_next(ls);  /* skip 'case' */
+
+    /* check for default: 'case _' */
+    if (ls->t.token == TK_NAME &&
+        strcmp(getstr(ls->t.seminfo.ts), "_") == 0) {
+      luaX_next(ls);  /* skip '_' */
+      checknext(ls, TK_THEN);
+      while (ls->t.token != TK_END && ls->t.token != TK_EOS)
+        statement(ls);
+      break;
+    }
+
+    /* parse pattern value */
+    expdesc pattern;
+    expr(ls, &pattern);
+    luaK_exp2nextreg(fs, &pattern);
+
+    checknext(ls, TK_THEN);
+
+    /* generate: EQ reg, pattern_reg, 0; JMP skip */
+    /* OP_EQ A B k: if ((R[A]==R[B]) ~= k) then pc++ (skip next)
+       k=1: skip next if (R[A]==R[B]) is true → skip JMP → fall into body
+       k=0: skip next if (R[A]==R[B]) is false → skip JMP → fall into body
+       We want: if equal → execute body. if not equal → skip.
+       So: k=0 → if NOT equal, skip JMP → falls through (wrong!)
+       k=1 → if EQUAL, skip JMP → falls into body (right!) */
+    /* OP_EQ A B k: if ((R[A]==R[B]) ~= k) then pc++ (skip next JMP)
+       k=1: if NOT equal → skip JMP → go to next case (fall through)
+             if EQUAL → execute JMP → jump past body... no.
+
+       Actually need: if NOT equal → skip body.
+       Use k=0: if ((eq) ~= 0) → if NOT equal → skip next.
+       Next = JMP to next_case. So if NOT equal, skip JMP, fall into body (WRONG).
+
+       Reverse: use k=1: if eq → skip JMP → fall into body.
+                          if not eq → execute JMP → go to next case. CORRECT! */
+    int preg = fs->freereg - 1;  /* pattern register */
+    luaK_codeABCk(fs, OP_EQ, reg, preg, 0, 0);
+    int jmp_skip = luaK_jump(fs);  /* executed when NOT equal → skip body */
+    fs->freereg = cast_byte(reg + 1);  /* free pattern, keep subject */
+
+    /* case body */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "case") == 0)
+        break;
+      statement(ls);
+    }
+    fs->freereg = cast_byte(reg + 1);  /* preserve subject register */
+
+    /* jump to end */
+    luaK_concat(fs, &jmp_end_list, luaK_jump(fs));
+    luaK_patchtohere(fs, jmp_skip);
+    fs->freereg = cast_byte(reg + 1);  /* reset for next case */
+  }
+
+  luaK_patchtohere(fs, jmp_end_list);
+  fs->freereg = cast_byte(reg);  /* free subject */
+
+  check_match(ls, TK_END, TK_MATCH, line);
+}
+
+
 static void statement (LexState *ls) {
   int line = ls->linenumber;  /* may be needed for error messages */
   enterlevel(ls);
@@ -3113,6 +3239,10 @@ static void statement (LexState *ls) {
     }
     case TK_ENUM: {  /* stat -> enumstat */
       enumstat(ls, line);
+      break;
+    }
+    case TK_MATCH: {  /* stat -> matchstat */
+      matchstat(ls, line);
       break;
     }
     case TK_DBCOLON: {  /* stat -> label */
