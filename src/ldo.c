@@ -643,7 +643,9 @@ l_sinline int precallC (lua_State *L, StkId func, unsigned status,
                                             lua_CFunction f) {
   int n;  /* number of returns */
   CallInfo *ci;
-  checkstackp(L, LUA_MINSTACK, func);  /* ensure minimum stack size */
+  /* fast check: skip expensive checkstackp if we have enough room */
+  if (l_unlikely(L->stack_last.p - L->top.p < LUA_MINSTACK))
+    checkstackp(L, LUA_MINSTACK, func);
   L->ci = ci = prepCallInfo(L, func, status | CIST_C,
                                L->top.p + LUA_MINSTACK);
   lua_assert(ci->top.p <= L->stack_last.p);
