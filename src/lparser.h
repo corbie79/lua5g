@@ -122,6 +122,7 @@ typedef union Vardesc {
     lu_byte ridx;  /* register holding the variable */
     short pidx;  /* index of the variable in the Proto's 'locvars' array */
     TString *name;  /* variable name */
+    TString *type_annotation;  /* type annotation (NULL if none) */
   } vd;
   TValue k;  /* constant value (if any) */
 } Vardesc;

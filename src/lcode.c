@@ -586,7 +586,7 @@ static int k2proto (FuncState *fs, TValue *key, TValue *v) {
 /*
 ** Add a string to list of constants and return its index.
 */
-static int stringK (FuncState *fs, TString *s) {
+int luaK_stringK (FuncState *fs, TString *s) {
   TValue o;
   setsvalue(fs->ls->L, &o, s);
   return k2proto(fs, &o, &o);  /* use string itself as key */
@@ -773,7 +773,7 @@ void luaK_setreturns (FuncState *fs, expdesc *e, int nresults) {
 */
 static int str2K (FuncState *fs, expdesc *e) {
   lua_assert(e->k == VKSTR);
-  e->u.info = stringK(fs, e->u.strval);
+  e->u.info = luaK_stringK(fs, e->u.strval);
   e->k = VK;
   return e->u.info;
 }
@@ -1061,7 +1061,7 @@ static int luaK_exp2K (FuncState *fs, expdesc *e) {
       case VNIL: info = nilK(fs); break;
       case VKINT: info = luaK_intK(fs, e->u.ival); break;
       case VKFLT: info = luaK_numberK(fs, e->u.nval); break;
-      case VKSTR: info = stringK(fs, e->u.strval); break;
+      case VKSTR: info = luaK_stringK(fs, e->u.strval); break;
       case VK: info = e->u.info; break;
       default: return 0;  /* not a constant */
     }

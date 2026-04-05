@@ -342,6 +342,8 @@ OP_GETVARG, /* A B C	R[A] := R[B][R[C]], R[B] is vararg parameter    */
 
 OP_ERRNNIL,/*	A Bx	raise error if R[A] ~= nil (K[Bx - 1] is global name)*/
 
+OP_TYPECHECK,/*	A Bx	check type(R[A]) matches K[Bx]:string, else error */
+
 OP_VARARGPREP,/* 	(adjust varargs)				*/
 
 OP_EXTRAARG/*	Ax	extra (larger) argument for previous opcode	*/

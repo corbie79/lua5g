@@ -67,7 +67,7 @@ static void expr (LexState *ls, expdesc *v);
 
 /*
 ** =======================================================
-** Type annotation parsing (parsed and discarded)
+** Type annotation parsing
 ** =======================================================
 */
 
@@ -75,20 +75,27 @@ static void expr (LexState *ls, expdesc *v);
 /*
 ** Parse a type annotation after ':'. Consumes the ':' and the type name.
 ** Type syntax: NAME ['?'] | 'nil' | '{' ... '}'
-** Types are parsed but have no semantic effect (gradual typing).
+** Returns the base type name as a TString* (for simple types like
+** 'number', 'string', etc.) or NULL for complex types.
+** Types are checked at runtime via OP_TYPECHECK for basic types.
 */
-static void parse_type (LexState *ls) {
+static TString *parse_type (LexState *ls) {
   /* parse_type -> NAME ['?'] | 'nil' | 'function' | '{' ... '}' | '(' ... ')' */
+  TString *typename_ = NULL;
+  int nullable = 0;
   switch (ls->t.token) {
     case TK_NAME: {
+      typename_ = ls->t.seminfo.ts;  /* capture type name */
       luaX_next(ls);  /* skip type name (number, string, boolean, etc.) */
       break;
     }
     case TK_NIL: {
+      typename_ = luaX_newstring(ls, "nil", 3);
       luaX_next(ls);  /* skip 'nil' */
       break;
     }
     case TK_FUNCTION: {
+      typename_ = luaX_newstring(ls, "function", 8);
       luaX_next(ls);  /* skip 'function' as type name */
       /* optional function signature: (params) -> rettype */
       if (ls->t.token == '(') {
@@ -104,11 +111,13 @@ static void parse_type (LexState *ls) {
       break;
     }
     case TK_TRUE: case TK_FALSE: {
+      typename_ = luaX_newstring(ls, "boolean", 7);
       luaX_next(ls);  /* boolean literal types */
       break;
     }
     case '{': {
       /* table type: { ... } - skip balanced braces */
+      typename_ = luaX_newstring(ls, "table", 5);
       int depth = 1;
       luaX_next(ls);  /* skip '{' */
       while (depth > 0 && ls->t.token != TK_EOS) {
@@ -121,6 +130,7 @@ static void parse_type (LexState *ls) {
     }
     case '(': {
       /* function type: (...) -> ... - skip balanced parens */
+      typename_ = luaX_newstring(ls, "function", 8);
       int depth = 1;
       luaX_next(ls);  /* skip '(' */
       while (depth > 0 && ls->t.token != TK_EOS) {
@@ -135,27 +145,37 @@ static void parse_type (LexState *ls) {
       luaX_syntaxerror(ls, "type name expected");
   }
   /* optional '?' for nullable types */
-  if (ls->t.token == '?')
+  if (ls->t.token == '?') {
     luaX_next(ls);  /* skip '?' */
-  /* optional '|' for union types: type | type */
-  while (ls->t.token == '|') {
-    luaX_next(ls);  /* skip '|' */
-    parse_type(ls);  /* parse next type in union */
+    nullable = 1;
   }
+  /* optional '|' for union types: type | type */
+  if (ls->t.token == '|') {
+    /* for union types, don't do runtime checking (too complex) */
+    while (ls->t.token == '|') {
+      luaX_next(ls);  /* skip '|' */
+      parse_type(ls);  /* parse next type in union */
+    }
+    return NULL;  /* no single type to check */
+  }
+  /* 'any' type means no checking */
+  if (typename_ != NULL && strcmp(getstr(typename_), "any") == 0)
+    return NULL;  /* 'any' = no type checking */
+  (void)nullable;  /* nullable types allow nil at runtime (handled in VM) */
+  return typename_;
 }
 
 
 /*
 ** Try to parse an optional type annotation (': type').
-** Returns 1 if annotation was found, 0 otherwise.
+** Returns the type name TString* if annotation found, NULL otherwise.
 */
-static int optional_type_annotation (LexState *ls) {
+static TString *optional_type_annotation (LexState *ls) {
   if (ls->t.token == ':') {
     luaX_next(ls);  /* skip ':' */
-    parse_type(ls);
-    return 1;
+    return parse_type(ls);
   }
-  return 0;
+  return NULL;
 }
 
 
@@ -272,9 +292,13 @@ static short registerlocalvar (LexState *ls, FuncState *fs,
   int oldsize = f->sizelocvars;
   luaM_growvector(ls->L, f->locvars, fs->ndebugvars, f->sizelocvars,
                   LocVar, SHRT_MAX, "local variables");
-  while (oldsize < f->sizelocvars)
-    f->locvars[oldsize++].varname = NULL;
+  while (oldsize < f->sizelocvars) {
+    f->locvars[oldsize].varname = NULL;
+    f->locvars[oldsize].typename_ = NULL;
+    oldsize++;
+  }
   f->locvars[fs->ndebugvars].varname = varname;
+  f->locvars[fs->ndebugvars].typename_ = NULL;
   f->locvars[fs->ndebugvars].startpc = fs->pc;
   luaC_objbarrier(ls->L, f, varname);
   return fs->ndebugvars++;
@@ -295,6 +319,7 @@ static int new_varkind (LexState *ls, TString *name, lu_byte kind) {
   var = &dyd->actvar.arr[dyd->actvar.n++];
   var->vd.kind = kind;  /* default */
   var->vd.name = name;
+  var->vd.type_annotation = NULL;
   return dyd->actvar.n - 1 - fs->firstlocal;
 }
 
@@ -428,6 +453,11 @@ static void adjustlocalvars (LexState *ls, int nvars) {
     Vardesc *var = getlocalvardesc(fs, vidx);
     var->vd.ridx = cast_byte(reglevel++);
     var->vd.pidx = registerlocalvar(ls, fs, var->vd.name);
+    /* transfer type annotation to debug info */
+    if (var->vd.type_annotation != NULL) {
+      fs->f->locvars[var->vd.pidx].typename_ = var->vd.type_annotation;
+      luaC_objbarrier(ls->L, fs->f, var->vd.type_annotation);
+    }
     luaY_checklimit(fs, reglevel, MAXVARS, "local variables");
   }
 }
@@ -1920,13 +1950,18 @@ static void localstat (LexState *ls) {
   int nvars = 0;
   int nexps;
   expdesc e;
+  int firstvar;  /* index of first variable in this declaration */
   /* get prefixed attribute (if any); default is regular local variable */
   lu_byte defkind = getvarattribute(ls, VDKREG);
+  firstvar = fs->nactvar;
   do {  /* for each variable */
     TString *vname = str_checkname(ls);  /* get its name */
-    optional_type_annotation(ls);  /* skip optional ': type' */
+    TString *typanno = optional_type_annotation(ls);  /* optional ': type' */
     lu_byte kind = getvarattribute(ls, defkind);  /* postfixed attribute */
     vidx = new_varkind(ls, vname, kind);  /* predeclare it */
+    /* store type annotation in Vardesc */
+    if (typanno != NULL)
+      getlocalvardesc(fs, vidx)->vd.type_annotation = typanno;
     if (kind == RDKTOCLOSE) {  /* to-be-closed? */
       if (toclose != -1)  /* one already present? */
         luaK_semerror(ls, "multiple to-be-closed variables in local list");
@@ -1953,6 +1988,18 @@ static void localstat (LexState *ls) {
     adjustlocalvars(ls, nvars);
   }
   checktoclose(fs, toclose);
+  /* emit OP_TYPECHECK for typed variables (after assignment) */
+  if (nexps > 0) {  /* only if there are initializers */
+    int i;
+    for (i = 0; i < nvars; i++) {
+      Vardesc *v = getlocalvardesc(fs, firstvar + i);
+      if (v->vd.type_annotation != NULL) {
+        int reg = v->vd.ridx;
+        int kk = luaK_stringK(fs, v->vd.type_annotation);
+        luaK_codeABx(fs, OP_TYPECHECK, reg, kk);
+      }
+    }
+  }
 }
 
 

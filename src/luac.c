@@ -655,6 +655,11 @@ static void PrintCode(const Proto* f)
 	printf(COMMENT);
 	if (bx==0) printf("?"); else PrintConstant(f,bx-1);
 	break;
+   case OP_TYPECHECK:
+	printf("%d %d",a,bx);
+	printf(COMMENT "check type(R[%d]) == ", a);
+	PrintConstant(f,bx);
+	break;
    case OP_VARARGPREP:
 	printf("%d",a);
 	break;
@@ -711,8 +716,10 @@ static void PrintDebug(const Proto* f)
  printf("locals (%d) for %p:\n",n,VOID(f));
  for (i=0; i<n; i++)
  {
-  printf("\t%d\t%s\t%d\t%d\n",
-  i,getstr(f->locvars[i].varname),f->locvars[i].startpc+1,f->locvars[i].endpc+1);
+  printf("\t%d\t%s\t%s\t%d\t%d\n",
+  i,getstr(f->locvars[i].varname),
+  f->locvars[i].typename_ ? getstr(f->locvars[i].typename_) : "-",
+  f->locvars[i].startpc+1,f->locvars[i].endpc+1);
  }
  n=f->sizeupvalues;
  printf("upvalues (%d) for %p:\n",n,VOID(f));

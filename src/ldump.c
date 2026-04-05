@@ -241,6 +241,7 @@ static void dumpDebug (DumpState *D, const Proto *f) {
   dumpInt(D, n);
   for (i = 0; i < n; i++) {
     dumpString(D, f->locvars[i].varname);
+    dumpString(D, f->locvars[i].typename_);
     dumpInt(D, f->locvars[i].startpc);
     dumpInt(D, f->locvars[i].endpc);
   }

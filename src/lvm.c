@@ -1952,6 +1952,36 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           halfProtect(luaG_errnnil(L, cl, GETARG_Bx(i)));
         vmbreak;
       }
+      vmcase(OP_TYPECHECK) {
+        /*  A Bx  -- check type(R[A]) matches K[Bx]:string, else error  */
+        TValue *ra = vRA(i);
+        TValue *typek = k + GETARG_Bx(i);
+        const char *expected = getstr(tsvalue(typek));
+        int match = 0;
+        if (strcmp(expected, "any") == 0 || strcmp(expected, "unknown") == 0)
+          match = 1;  /* 'any'/'unknown' matches everything */
+        else if (strcmp(expected, "number") == 0)
+          match = ttisnumber(ra);
+        else if (strcmp(expected, "string") == 0)
+          match = ttisstring(ra);
+        else if (strcmp(expected, "boolean") == 0)
+          match = ttisboolean(ra);
+        else if (strcmp(expected, "table") == 0)
+          match = ttistable(ra);
+        else if (strcmp(expected, "function") == 0)
+          match = ttisfunction(ra);
+        else if (strcmp(expected, "nil") == 0)
+          match = ttisnil(ra);
+        else if (strcmp(expected, "thread") == 0)
+          match = ttisthread(ra);
+        else if (strcmp(expected, "userdata") == 0)
+          match = (ttisfulluserdata(ra) || ttislightuserdata(ra));
+        else
+          match = 1;  /* unknown type name: allow (may be user-defined class) */
+        if (!match && !ttisnil(ra))  /* nil is allowed for nullable types */
+          halfProtect(luaG_typecheckerror(L, ra, expected, GETARG_A(i)));
+        vmbreak;
+      }
       vmcase(OP_VARARGPREP) {
         ProtectNT(luaT_adjustvarargs(L, ci, cl->p));
         if (l_unlikely(trap)) {  /* previous "Protect" updated trap */
