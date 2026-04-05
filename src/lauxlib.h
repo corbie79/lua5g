@@ -265,6 +265,55 @@ typedef struct luaL_Stream {
 /* }============================================================ */
 
 
+/* {============================================================ */
+/* Class binding API                                              */
+/* ============================================================= */
+
+/*
+** luaL_newclass: Create a class table with methods, set __index, register
+** as global.  Pushes the class table on the stack.
+**   ClassName = {}; ClassName.__index = ClassName
+**   -- methods added to ClassName
+**   _G[name] = ClassName  (also stored in registry as "class:Name")
+*/
+LUALIB_API void (luaL_newclass) (lua_State *L, const char *name,
+                                 const luaL_Reg *methods);
+
+/*
+** luaL_newsubclass: Create a subclass extending a parent.
+** Pushes the subclass table on the stack.
+**   Child = setmetatable({}, {__index = Parent})
+**   Child.__index = Child
+**   -- methods added to Child
+*/
+LUALIB_API void (luaL_newsubclass) (lua_State *L, const char *name,
+                                     const char *parent,
+                                     const luaL_Reg *methods);
+
+/*
+** luaL_pushinstance: Create a new instance of a class.
+** Pushes a new table with its metatable set to the class.
+**   inst = setmetatable({}, ClassName)
+*/
+LUALIB_API void (luaL_pushinstance) (lua_State *L, const char *classname);
+
+/*
+** luaL_isinstance: Check if value at 'idx' is an instance of 'classname'.
+** Walks the metatable chain for inheritance support.
+** Returns 1 if instance, 0 otherwise.
+*/
+LUALIB_API int (luaL_isinstance) (lua_State *L, int idx,
+                                   const char *classname);
+
+/*
+** luaL_checkinstance: Check argument is an instance of the named class.
+** Returns the table pointer (as light userdata) or raises an error.
+*/
+LUALIB_API void (luaL_checkinstance) (lua_State *L, int arg,
+                                      const char *classname);
+
+/* }============================================================ */
+
 
 #endif
 

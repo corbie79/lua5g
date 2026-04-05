@@ -106,10 +106,19 @@ static int is_valid_typename (LexState *ls, TString *name) {
     if (strcmp(s, builtin_types[i]) == 0)
       return 1;
   }
-  /* check declared classes */
+  /* check declared classes (from 'class' keyword) */
   for (i = 0; i < ls->nclasses; i++) {
     if (ls->classnames[i] == name)  /* pointer equality (interned strings) */
       return 1;
+  }
+  /* check C-registered classes in registry (key = "class:Name") */
+  {
+    lua_State *L = ls->L;
+    lua_pushfstring(L, "class:%s", s);
+    lua_getfield(L, LUA_REGISTRYINDEX, lua_tostring(L, -1));
+    int found = !lua_isnil(L, -1);
+    lua_pop(L, 2);  /* pop key and value */
+    if (found) return 1;
   }
   return 0;
 }

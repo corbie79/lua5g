@@ -1200,3 +1200,168 @@ LUALIB_API void luaL_checkversion_ (lua_State *L, lua_Number ver, size_t sz) {
                   (LUAI_UACNUMBER)ver, (LUAI_UACNUMBER)v);
 }
 
+
+/* ============================================================ */
+/* Class binding API                                             */
+/* ============================================================ */
+
+
+/*
+** Helper: get the registry key for a class name.
+** Class tables are stored in the registry as "class:ClassName"
+*/
+static const char *classregkey (lua_State *L, const char *name) {
+  lua_pushfstring(L, "class:%s", name);
+  const char *key = lua_tostring(L, -1);
+  return key;  /* note: string is on stack, caller must manage */
+}
+
+
+LUALIB_API void luaL_newclass (lua_State *L, const char *name,
+                                const luaL_Reg *methods) {
+  /* create class table */
+  lua_newtable(L);                            /* [class] */
+
+  /* set __index = class (self-referencing for method lookup) */
+  lua_pushvalue(L, -1);                       /* [class, class] */
+  lua_setfield(L, -2, "__index");             /* [class] */
+
+  /* set __name for nice error messages */
+  lua_pushstring(L, name);                    /* [class, name] */
+  lua_setfield(L, -2, "__name");              /* [class] */
+
+  /* add methods */
+  if (methods != NULL)
+    luaL_setfuncs(L, methods, 0);             /* [class] */
+
+  /* store in registry: registry["class:Name"] = class */
+  const char *key = classregkey(L, name);     /* [class, key] */
+  lua_pushvalue(L, -2);                       /* [class, key, class] */
+  lua_setfield(L, LUA_REGISTRYINDEX, key);    /* [class, key] */
+  lua_pop(L, 1);                              /* [class] */
+
+  /* also set as global: _G[name] = class */
+  lua_pushvalue(L, -1);                       /* [class, class] */
+  lua_setglobal(L, name);                     /* [class] */
+}
+
+
+LUALIB_API void luaL_newsubclass (lua_State *L, const char *name,
+                                   const char *parent,
+                                   const luaL_Reg *methods) {
+  /* create child class table */
+  lua_newtable(L);                            /* [child] */
+
+  /* set __index = child */
+  lua_pushvalue(L, -1);                       /* [child, child] */
+  lua_setfield(L, -2, "__index");             /* [child] */
+
+  /* set __name */
+  lua_pushstring(L, name);                    /* [child, name] */
+  lua_setfield(L, -2, "__name");              /* [child] */
+
+  /* set up inheritance: setmetatable(child, {__index = Parent}) */
+  lua_newtable(L);                            /* [child, mt] */
+  const char *pkey = classregkey(L, parent);  /* [child, mt, pkey] */
+  lua_getfield(L, LUA_REGISTRYINDEX, pkey);   /* [child, mt, pkey, parent] */
+  if (lua_isnil(L, -1))
+    luaL_error(L, "parent class '%s' not found", parent);
+  lua_remove(L, -2);                          /* [child, mt, parent] */
+  lua_setfield(L, -2, "__index");             /* [child, mt] */
+  lua_setmetatable(L, -2);                    /* [child] */
+
+  /* add methods */
+  if (methods != NULL)
+    luaL_setfuncs(L, methods, 0);             /* [child] */
+
+  /* store in registry */
+  const char *key = classregkey(L, name);     /* [child, key] */
+  lua_pushvalue(L, -2);                       /* [child, key, child] */
+  lua_setfield(L, LUA_REGISTRYINDEX, key);    /* [child, key] */
+  lua_pop(L, 1);                              /* [child] */
+
+  /* set as global */
+  lua_pushvalue(L, -1);                       /* [child, child] */
+  lua_setglobal(L, name);                     /* [child] */
+}
+
+
+LUALIB_API void luaL_pushinstance (lua_State *L, const char *classname) {
+  /* create instance table */
+  lua_newtable(L);                            /* [inst] */
+
+  /* get class from registry */
+  const char *key = classregkey(L, classname);/* [inst, key] */
+  lua_getfield(L, LUA_REGISTRYINDEX, key);    /* [inst, key, class] */
+  if (lua_isnil(L, -1))
+    luaL_error(L, "class '%s' not found", classname);
+  lua_remove(L, -2);                          /* [inst, class] */
+
+  /* setmetatable(inst, class) */
+  lua_setmetatable(L, -2);                    /* [inst] */
+}
+
+
+LUALIB_API int luaL_isinstance (lua_State *L, int idx, const char *classname) {
+  if (!lua_istable(L, idx))
+    return 0;
+
+  /* get class from registry */
+  const char *key = classregkey(L, classname);/* [key] */
+  lua_getfield(L, LUA_REGISTRYINDEX, key);    /* [key, class] */
+  lua_remove(L, -2);                          /* [class] */
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 0;  /* class not found */
+  }
+
+  /* walk metatable chain of value */
+  idx = lua_absindex(L, idx);
+  int found = 0;
+  int depth = 0;
+  if (!lua_getmetatable(L, idx)) {            /* [class, mt?] */
+    lua_pop(L, 1);  /* pop class */
+    return 0;
+  }
+  /* stack: [class, mt] */
+  while (!found && depth < 20) {
+    if (lua_rawequal(L, -1, -2)) {  /* mt == class? */
+      found = 1;
+      break;
+    }
+    /* get mt.__index */
+    if (lua_getfield(L, -1, "__index") == LUA_TTABLE) {
+      /* check if __index is the class */
+      if (lua_rawequal(L, -1, -3)) {
+        lua_pop(L, 1);  /* pop __index */
+        found = 1;
+        break;
+      }
+      /* check __index's metatable for further inheritance */
+      if (lua_getmetatable(L, -1)) {
+        lua_remove(L, -2);  /* remove old __index, keep new mt */
+        lua_remove(L, -2);  /* remove old mt */
+        /* stack: [class, new_mt] */
+      }
+      else {
+        lua_pop(L, 1);  /* pop __index */
+        break;
+      }
+    }
+    else {
+      lua_pop(L, 1);  /* pop non-table __index */
+      break;
+    }
+    depth++;
+  }
+  lua_pop(L, 2);  /* pop class and mt */
+  return found;
+}
+
+
+LUALIB_API void luaL_checkinstance (lua_State *L, int arg,
+                                    const char *classname) {
+  if (!luaL_isinstance(L, arg, classname))
+    luaL_typeerror(L, arg, classname);
+}
+
