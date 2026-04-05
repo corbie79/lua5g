@@ -464,8 +464,9 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
       case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
       case OP_DIVK: case OP_IDIVK:
-      case OP_GETFIELD: case OP_SETFIELD:
-      case OP_GETI: case OP_SETI:
+      case OP_GETFIELD:  /* 1.5x via C helper */
+      case OP_GETI:      /* 1.2x via C helper */
+      /* SETFIELD/SETI: ~1.0x (no gain, C helper ≈ interpreter) → fallback */
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
