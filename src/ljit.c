@@ -12,10 +12,12 @@
 
 #include "lua.h"
 #include "ljit.h"
+#include "lapi.h"
 #include "ldebug.h"
 #include "ldo.h"
 #include "lmem.h"
 #include "lobject.h"
+#include "llimits.h"
 #include "lopcodes.h"
 #include "lstate.h"
 #include "lvm.h"
@@ -83,6 +85,45 @@ void luaJ_helper_getfield (StackValue *base, int a, int b, int c,
 /*
 ** JIT helper: GETI R[A] = R[B][C]
 */
+/*
+** JIT helper: SETFIELD R[A][K[B]:shortstring] = RK(C)
+*/
+void luaJ_helper_setfield (lua_State *L, StackValue *base, int a, int b,
+                            int c, TValue *k, int rk) {
+  TValue *ra = s2v(base + a);
+  if (ttistable(ra)) {
+    TValue *val = rk ? &k[c] : s2v(base + c);
+    luaH_set(L, hvalue(ra), &k[b], val);
+  }
+}
+
+/*
+** JIT helper: SETI R[A][B] = RK(C)
+*/
+void luaJ_helper_seti (lua_State *L, StackValue *base, int a, int b,
+                        int c, TValue *k, int rk) {
+  TValue *ra = s2v(base + a);
+  if (ttistable(ra)) {
+    TValue *val = rk ? &k[c] : s2v(base + c);
+    luaH_setint(L, hvalue(ra), b, val);
+  }
+}
+
+/*
+** JIT helper: simple CALL for light C functions
+** R[A], ..., R[A+C-2] = R[A](R[A+1], ..., R[A+B-1])
+*/
+void luaJ_helper_call (lua_State *L, StackValue *base, int a, int b, int c) {
+  /* Use the full Lua call machinery for correctness */
+  StkId func = base + a;
+  if (b != 0)
+    L->top.p = func + b;
+  int nresults = c - 1;
+  luaD_call(L, func, nresults);
+  /* results are now at base+a ... base+a+nresults-1 */
+}
+
+
 void luaJ_helper_geti (StackValue *base, int a, int b, int c) {
   TValue *rb = s2v(base + b);
   if (ttistable(rb)) {
@@ -190,7 +231,9 @@ void jit_emit_prologue(JitEmitter *e) {
   emit2(e, 0x41, 0x57);                    /* push r15 */
   /* save k pointer: mov r12, rsi */
   { unsigned char b[] = {0x49, 0x89, 0xF4}; emit_bytes(e, b, 3); }
-  /* rdi = base, r12 = k */
+  /* save lua_State: mov r13, rdx */
+  { unsigned char b[] = {0x49, 0x89, 0xD5}; emit_bytes(e, b, 3); }
+  /* rdi = base, r12 = k, r13 = L */
 }
 
 
@@ -421,8 +464,8 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
       case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
       case OP_DIVK: case OP_IDIVK:
-      case OP_GETFIELD:
-      case OP_GETI:
+      case OP_GETFIELD: case OP_SETFIELD:
+      case OP_GETI: case OP_SETI:
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
@@ -708,7 +751,84 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         emit1(&em, 0x5F);  /* pop rdi */
         break;
       }
-      /* SETFIELD needs lua_State for GC - falls back to interpreter */
+      case OP_SETFIELD: {
+        /* luaJ_helper_setfield(L=rdi, base=rsi, a=rdx, b=rcx, c=r8, k=r9, rk=stack) */
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        int rk = GETARG_k(inst);
+        /* save rdi (base) */
+        emit1(&em, 0x57);  /* push rdi */
+        /* rdi=L(r13), rsi=base(from stack), rdx=a, rcx=b, r8=c, r9=k(r12) */
+        /* mov rsi, rdi (base) */
+        { unsigned char bb[] = {0x48, 0x89, 0xFE}; emit_bytes(&em, bb, 3); }
+        /* mov rdi, r13 (L) */
+        { unsigned char bb[] = {0x4C, 0x89, 0xEF}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)a); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)b); }
+        { unsigned char bb[] = {0x49, 0xC7, 0xC0}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)c); }
+        { unsigned char bb[] = {0x4D, 0x89, 0xE1}; emit_bytes(&em, bb, 3); }
+          /* mov r9, r12 (k) */
+        /* 7th arg on stack */
+        { unsigned char bb[] = {0x6A}; emit_bytes(&em, bb, 1);
+          emit1(&em, (unsigned char)rk); }  /* push rk */
+        emit2(&em, 0x48, 0xB8);
+        emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_setfield);
+        emit2(&em, 0xFF, 0xD0);
+        { unsigned char bb[] = {0x48, 0x83, 0xC4, 0x08};
+          emit_bytes(&em, bb, 4); }  /* add rsp, 8 (pop stack arg) */
+        emit1(&em, 0x5F);  /* pop rdi (restore base) */
+        break;
+      }
+      case OP_SETI: {
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        int rk = GETARG_k(inst);
+        emit1(&em, 0x57);
+        { unsigned char bb[] = {0x48, 0x89, 0xFE}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x4C, 0x89, 0xEF}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)a); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)b); }
+        { unsigned char bb[] = {0x49, 0xC7, 0xC0}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)c); }
+        { unsigned char bb[] = {0x4D, 0x89, 0xE1}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x6A}; emit_bytes(&em, bb, 1);
+          emit1(&em, (unsigned char)rk); }
+        emit2(&em, 0x48, 0xB8);
+        emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_seti);
+        emit2(&em, 0xFF, 0xD0);
+        { unsigned char bb[] = {0x48, 0x83, 0xC4, 0x08};
+          emit_bytes(&em, bb, 4); }
+        emit1(&em, 0x5F);
+        break;
+      }
+      case OP_GETTABUP: {
+        /* GETTABUP needs upvalues - skip for now */
+        break;
+      }
+      case OP_CALL: {
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        emit1(&em, 0x57);  /* push rdi (base) */
+        /* luaJ_helper_call(L, base, a, b, c) */
+        { unsigned char bb[] = {0x48, 0x89, 0xFE}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x4C, 0x89, 0xEF}; emit_bytes(&em, bb, 3); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)a); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)b); }
+        { unsigned char bb[] = {0x49, 0xC7, 0xC0}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)c); }
+        emit2(&em, 0x48, 0xB8);
+        emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_call);
+        emit2(&em, 0xFF, 0xD0);
+        emit1(&em, 0x5F);  /* pop rdi */
+        break;
+      }
       case OP_GETI: {
         int b = GETARG_B(inst);
         int c = GETARG_C(inst);
@@ -725,7 +845,6 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         emit1(&em, 0x5F);
         break;
       }
-      /* SETI/GETTABUP/CALL need full VM state - fall back */
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;
       default:
