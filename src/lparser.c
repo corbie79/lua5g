@@ -1546,6 +1546,46 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         fieldsel(ls, v);
         break;
       }
+      case '?': {  /* nullable chaining: ?. or ?[ */
+        luaX_next(ls);  /* skip '?' */
+        if (ls->t.token == '.' || ls->t.token == '[') {
+          /* a?.b compiles to:
+               local __tmp = a
+               if __tmp == nil then result = nil
+               else result = __tmp.b end
+          */
+          int resultreg;
+          luaK_exp2nextreg(fs, v);
+          resultreg = fs->freereg - 1;
+          /* TEST resultreg k=0: skip JMP if truthy */
+          luaK_codeABCk(fs, OP_TEST, resultreg, 0, 0, 0);
+          int jmp_nil = luaK_jump(fs);
+          /* not nil: do field access (result stays in resultreg) */
+          init_exp(v, VNONRELOC, resultreg);
+          if (ls->t.token == '.')
+            fieldsel(ls, v);
+          else {
+            expdesc key;
+            luaK_exp2anyregup(fs, v);
+            yindex(ls, &key);
+            luaK_indexed(fs, v, &key);
+          }
+          luaK_exp2nextreg(fs, v);
+          if (v->u.info != resultreg)
+            luaK_codeABC(fs, OP_MOVE, resultreg, v->u.info, 0);
+          fs->freereg = cast_byte(resultreg + 1);
+          int jmp_end = luaK_jump(fs);
+          /* nil path: store nil in resultreg */
+          luaK_patchtohere(fs, jmp_nil);
+          luaK_nil(fs, resultreg, 1);
+          luaK_patchtohere(fs, jmp_end);
+          init_exp(v, VNONRELOC, resultreg);
+        }
+        else {
+          luaX_syntaxerror(ls, "'.' or '[' expected after '?'");
+        }
+        break;
+      }
       case '[': {  /* '[' exp ']' */
         expdesc key;
         luaK_exp2anyregup(fs, v);
@@ -1663,6 +1703,61 @@ static void simpleexp (LexState *ls, expdesc *v) {
       return;
     }
     default: {
+      /* String interpolation: f"hello {name} world"
+         Only supports simple variable references {name}, not expressions.
+         Compiles to: "hello " .. tostring(name) .. " world" */
+      if (ls->t.token == TK_NAME
+          && ls->t.seminfo.ts == luaX_newstring(ls, "f", 1)
+          && luaX_lookahead(ls) == TK_STRING) {
+        FuncState *fs = ls->fs;
+        luaX_next(ls);  /* skip 'f' (lookahead consumed next token) */
+        TString *tmpl = ls->t.seminfo.ts;
+        const char *s = getstr(tmpl);
+        size_t len = tsslen(tmpl);
+        luaX_next(ls);  /* skip the string */
+        /* Split template into parts, push all onto stack, then concat */
+        int nparts = 0;
+        int firstreg = fs->freereg;
+        size_t pos = 0;
+        while (pos <= len) {
+          size_t start = pos;
+          while (pos < len && s[pos] != '{') pos++;
+          /* literal segment */
+          if (pos > start) {
+            expdesc lit;
+            codestring(&lit, luaX_newstring(ls, s + start, pos - start));
+            luaK_exp2nextreg(fs, &lit);
+            nparts++;
+          }
+          if (pos >= len) break;
+          if (s[pos] == '{') {
+            pos++;
+            size_t es = pos;
+            while (pos < len && s[pos] != '}') pos++;
+            if (pos < len) {
+              TString *vn = luaX_newstring(ls, s + es, pos - es);
+              expdesc ve;
+              buildvar(ls, vn, &ve);
+              luaK_exp2nextreg(fs, &ve);
+              nparts++;
+              pos++;  /* skip '}' */
+            }
+          }
+        }
+        if (nparts == 0) {
+          codestring(v, luaX_newstring(ls, "", 0));
+        }
+        else if (nparts == 1) {
+          init_exp(v, VNONRELOC, firstreg);
+        }
+        else {
+          /* OP_CONCAT A B: R[A] = R[A] .. ... .. R[A+B-1] */
+          luaK_codeABC(fs, OP_CONCAT, firstreg, nparts, 0);
+          fs->freereg = cast_byte(firstreg + 1);  /* result in firstreg */
+          init_exp(v, VNONRELOC, firstreg);
+        }
+        return;
+      }
       suffixedexp(ls, v);
       return;
     }
@@ -2887,6 +2982,8 @@ static void classstat (LexState *ls, int line) {
   TString *class_method_names[MAX_CLASS_METHODS];
   int nclass_methods = 0;
 
+  int is_abstract_class = 0;  /* set if any abstract method found */
+
   while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
     if (ls->t.token == TK_FUNCTION) {
       /* Method declaration */
@@ -2897,6 +2994,98 @@ static void classstat (LexState *ls, int line) {
         class_method_names[nclass_methods++] = mname;
     }
     else if (ls->t.token == TK_NAME) {
+      /* Check for 'static', 'abstract', 'operator' keywords */
+      const char *kw = getstr(ls->t.seminfo.ts);
+
+      /* static function NAME(...) - stored on class table directly */
+      if (strcmp(kw, "static") == 0) {
+        luaX_next(ls);  /* skip 'static' */
+        if (ls->t.token == TK_FUNCTION) {
+          expdesc cv;
+          buildglobal(ls, classname, &cv);
+          /* classmethod without class context (no self access to private) */
+          TString *mname = classmethod(ls, &cv, NULL);
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = mname;
+        }
+        else {
+          luaX_syntaxerror(ls, "'function' expected after 'static'");
+        }
+        continue;
+      }
+
+      /* abstract function NAME(...) - no body, just declaration */
+      if (strcmp(kw, "abstract") == 0) {
+        luaX_next(ls);  /* skip 'abstract' */
+        if (ls->t.token == TK_FUNCTION) {
+          luaX_next(ls);  /* skip 'function' */
+          TString *mname = str_checkname(ls);
+          /* skip param list */
+          checknext(ls, '(');
+          while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+            if (ls->t.token == TK_NAME) {
+              luaX_next(ls);
+              optional_type_annotation(ls);
+            }
+            else if (ls->t.token == TK_DOTS)
+              luaX_next(ls);
+            if (ls->t.token == ',') luaX_next(ls);
+          }
+          checknext(ls, ')');
+          optional_type_annotation(ls);
+          /* no body - abstract */
+          is_abstract_class = 1;
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = mname;
+        }
+        else {
+          luaX_syntaxerror(ls, "'function' expected after 'abstract'");
+        }
+        continue;
+      }
+
+      /* operator + - * / == < (maps to __add etc) */
+      if (strcmp(kw, "operator") == 0) {
+        luaX_next(ls);  /* skip 'operator' */
+        /* get the operator symbol */
+        TString *metamethod = NULL;
+        switch (ls->t.token) {
+          case '+': metamethod = luaX_newstring(ls, "__add", 5); break;
+          case '-': metamethod = luaX_newstring(ls, "__sub", 5); break;
+          case '*': metamethod = luaX_newstring(ls, "__mul", 5); break;
+          case '/': metamethod = luaX_newstring(ls, "__div", 5); break;
+          case '%': metamethod = luaX_newstring(ls, "__mod", 5); break;
+          case TK_EQ: metamethod = luaX_newstring(ls, "__eq", 4); break;
+          case '<': metamethod = luaX_newstring(ls, "__lt", 4); break;
+          case TK_LE: metamethod = luaX_newstring(ls, "__le", 4); break;
+          case TK_CONCAT: metamethod = luaX_newstring(ls, "__concat", 8); break;
+          default:
+            if (ls->t.token == TK_NAME) {
+              const char *opn = getstr(ls->t.seminfo.ts);
+              if (strcmp(opn, "len") == 0)
+                metamethod = luaX_newstring(ls, "__len", 5);
+              else if (strcmp(opn, "tostring") == 0)
+                metamethod = luaX_newstring(ls, "__tostring", 10);
+              else if (strcmp(opn, "call") == 0)
+                metamethod = luaX_newstring(ls, "__call", 6);
+            }
+            if (metamethod == NULL)
+              luaX_syntaxerror(ls, "unknown operator for overloading");
+        }
+        luaX_next(ls);  /* skip operator token */
+        /* parse function body: ClassName.__metamethod = function(...) ... end */
+        {
+          expdesc cv, key, b;
+          buildglobal(ls, classname, &cv);
+          luaK_exp2anyregup(fs, &cv);
+          codestring(&key, metamethod);
+          luaK_indexed(fs, &cv, &key);
+          body_classctx(ls, &b, 0, ls->linenumber, classname);
+          luaK_storevar(fs, &cv, &b);
+          luaK_fixline(fs, ls->linenumber);
+        }
+        continue;
+      }
       TString *word = ls->t.seminfo.ts;
       const char *ws = getstr(word);
       /* check for access modifiers */
