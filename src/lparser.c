@@ -67,9 +67,67 @@ static void expr (LexState *ls, expdesc *v);
 
 /*
 ** =======================================================
-** Type annotation parsing
+** Type annotation parsing and compile-time type checking
 ** =======================================================
 */
+
+
+/* built-in type names recognized by the type system */
+static const char *const builtin_types[] = {
+  "number", "string", "boolean", "table", "function",
+  "nil", "thread", "userdata", "any", "unknown", NULL
+};
+
+
+/*
+** Register a class name in the parser's class registry.
+*/
+static void register_classname (LexState *ls, TString *name) {
+  lua_State *L = ls->L;
+  if (ls->nclasses >= ls->classnames_size) {
+    int newsize = (ls->classnames_size == 0) ? 8 : ls->classnames_size * 2;
+    ls->classnames = (TString **)luaM_reallocvector(L, ls->classnames,
+                          ls->classnames_size, newsize, TString *);
+    ls->classnames_size = newsize;
+  }
+  ls->classnames[ls->nclasses++] = name;
+}
+
+
+/*
+** Check if a type name is valid (built-in type, declared class, or type alias).
+** Returns 1 if valid, 0 if unknown.
+*/
+static int is_valid_typename (LexState *ls, TString *name) {
+  const char *s = getstr(name);
+  int i;
+  /* check built-in types */
+  for (i = 0; builtin_types[i] != NULL; i++) {
+    if (strcmp(s, builtin_types[i]) == 0)
+      return 1;
+  }
+  /* check declared classes */
+  for (i = 0; i < ls->nclasses; i++) {
+    if (ls->classnames[i] == name)  /* pointer equality (interned strings) */
+      return 1;
+  }
+  return 0;
+}
+
+
+/*
+** Get the compile-time type of an expression kind.
+** Returns a string like "number", "string", etc., or NULL if unknown.
+*/
+static const char *expr_compiletime_type (expkind k) {
+  switch (k) {
+    case VKINT: case VKFLT: return "number";
+    case VKSTR: return "string";
+    case VTRUE: case VFALSE: return "boolean";
+    case VNIL: return "nil";
+    default: return NULL;  /* type not known at compile time */
+  }
+}
 
 
 /*
@@ -161,6 +219,9 @@ static TString *parse_type (LexState *ls) {
   /* 'any' type means no checking */
   if (typename_ != NULL && strcmp(getstr(typename_), "any") == 0)
     return NULL;  /* 'any' = no type checking */
+  /* validate type name at compile time */
+  if (typename_ != NULL && !is_valid_typename(ls, typename_))
+    luaK_semerror(ls, "unknown type '%s'", getstr(typename_));
   (void)nullable;  /* nullable types allow nil at runtime (handled in VM) */
   return typename_;
 }
@@ -1994,6 +2055,18 @@ static void localstat (LexState *ls) {
     for (i = 0; i < nvars; i++) {
       Vardesc *v = getlocalvardesc(fs, firstvar + i);
       if (v->vd.type_annotation != NULL) {
+        const char *expected = getstr(v->vd.type_annotation);
+        /* for single-var assignments, check literal type at compile time */
+        if (nvars == 1 && nexps == 1) {
+          const char *actual = expr_compiletime_type(e.k);
+          if (actual != NULL && strcmp(expected, "unknown") != 0) {
+            if (strcmp(expected, actual) != 0)
+              luaK_semerror(ls,
+                "type error: '%s' expected for variable '%s', got '%s'",
+                expected, getstr(v->vd.name), actual);
+          }
+        }
+        /* still emit OP_TYPECHECK for dynamic values (function calls etc) */
         int reg = v->vd.ridx;
         int kk = luaK_stringK(fs, v->vd.type_annotation);
         luaK_codeABx(fs, OP_TYPECHECK, reg, kk);
@@ -2259,6 +2332,9 @@ static void classstat (LexState *ls, int line) {
 
   luaX_next(ls);  /* skip 'class' */
   classname = str_checkname(ls);  /* get class name */
+
+  /* register class name for compile-time type validation */
+  register_classname(ls, classname);
 
   /* Check for 'extends' */
   TString *parentname = NULL;
@@ -2542,6 +2618,9 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
+  /* free class name registry */
+  if (lexstate.classnames != NULL)
+    luaM_freearray(L, lexstate.classnames, lexstate.classnames_size);
   L->top.p--;  /* remove scanner's table */
   return cl;  /* closure is on the stack, too */
 }

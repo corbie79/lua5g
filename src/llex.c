@@ -195,6 +195,9 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->glbn->extra = 0;  /* mark it as not reserved */
 #endif
   ls->typn = luaS_newliteral(L, "type");  /* get "type" string */
+  ls->classnames = NULL;
+  ls->nclasses = 0;
+  ls->classnames_size = 0;
   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
 }
 

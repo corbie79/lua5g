@@ -1976,8 +1976,48 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           match = ttisthread(ra);
         else if (strcmp(expected, "userdata") == 0)
           match = (ttisfulluserdata(ra) || ttislightuserdata(ra));
-        else
-          match = 1;  /* unknown type name: allow (may be user-defined class) */
+        else {
+          /* Class instance check: look up type name in _ENV,
+             then check if value's metatable chain includes that class */
+          TValue classval;
+          TString *tname = tsvalue(typek);
+          TValue *env = cl->upvals[0]->v.p;  /* _ENV */
+          lu_byte tag;
+          if (ttistable(env)) {
+            tag = luaH_getshortstr(hvalue(env), tname, &classval);
+            if (!tagisempty(tag) && ttistable(&classval) && ttistable(ra)) {
+              /* Walk class hierarchy to check instanceof.
+                 For instance d of Dog extends Animal:
+                   d.metatable = Dog
+                   Dog.metatable = {__index = Animal}
+                 So we check: mt == cls, or mt.metatable.__index == cls,
+                 walking up the chain. */
+              Table *cls = hvalue(&classval);
+              Table *cur = hvalue(ra)->metatable;  /* start: instance's mt */
+              int depth = 0;
+              while (cur != NULL && depth < 20) {
+                if (cur == cls) { match = 1; break; }
+                /* go up: cur's metatable's __index is the parent class */
+                Table *curmt = cur->metatable;
+                if (curmt != NULL) {
+                  TValue idx;
+                  lu_byte itag = luaH_getshortstr(curmt,
+                                    G(L)->tmname[TM_INDEX], &idx);
+                  if (!tagisempty(itag) && ttistable(&idx)) {
+                    cur = hvalue(&idx);  /* parent class table */
+                  }
+                  else break;
+                }
+                else break;
+                depth++;
+              }
+            }
+            else if (tagisempty(tag))
+              match = 1;  /* class not found in _ENV: allow (forward ref) */
+          }
+          else
+            match = 1;  /* no _ENV table: skip check */
+        }
         if (!match && !ttisnil(ra))  /* nil is allowed for nullable types */
           halfProtect(luaG_typecheckerror(L, ra, expected, GETARG_A(i)));
         vmbreak;

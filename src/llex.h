@@ -79,6 +79,10 @@ typedef struct LexState {
   TString *brkn;  /* "break" name (used as a label) */
   TString *glbn;  /* "global" name (when not a reserved word) */
   TString *typn;  /* "type" name (for type alias statements) */
+  /* class name registry for compile-time type validation */
+  TString **classnames;  /* array of declared class names */
+  int nclasses;  /* number of declared classes */
+  int classnames_size;  /* allocated size */
 } LexState;
 
 
