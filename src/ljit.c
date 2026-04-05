@@ -8,6 +8,7 @@
 
 #include "lprefix.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "lua.h"
@@ -113,14 +114,36 @@ void luaJ_helper_seti (lua_State *L, StackValue *base, int a, int b,
 ** JIT helper: simple CALL for light C functions
 ** R[A], ..., R[A+C-2] = R[A](R[A+1], ..., R[A+B-1])
 */
+/*
+** JIT helper: CALL for light C functions only.
+** Safe: no luaD_call, no nCcalls, no hooks.
+** Sets up minimal state for C function to read args and push results.
+*/
 void luaJ_helper_call (lua_State *L, StackValue *base, int a, int b, int c) {
-  /* Use the full Lua call machinery for correctness */
-  StkId func = base + a;
-  if (b != 0)
-    L->top.p = func + b;
+  TValue *func = s2v(base + a);
+  if (!ttislcf(func)) return;
+  lua_CFunction f = fvalue(func);
+  CallInfo *ci = L->ci;
+  StkId save_func = ci->func.p;
+  StkId save_top = ci->top.p;
+  StkId save_ltop = L->top.p;
+  ci->func.p = base + a;
+  L->top.p = base + a + b;
+  int n = f(L);
+  /* result is at L->top.p - n */
   int nresults = c - 1;
-  luaD_call(L, func, nresults);
-  /* results are now at base+a ... base+a+nresults-1 */
+  if (n > 0 && nresults > 0) {
+    TValue *src = s2v(L->top.p - n);
+    TValue *dst = s2v(base + a);
+    dst->value_ = src->value_;
+    settt_(dst, src->tt_);
+  }
+  else if (nresults > 0) {
+    setnilvalue(s2v(base + a));
+  }
+  ci->func.p = save_func;
+  ci->top.p = save_top;
+  L->top.p = save_ltop;  /* restore L->top too! */
 }
 
 
@@ -241,12 +264,12 @@ void jit_emit_epilogue(JitEmitter *e) {
   /* xor eax, eax (return 0 = success) */
   emit2(e, 0x31, 0xC0);
   /* pop r15; pop r14; pop r13; pop r12; pop rbx; ret */
-  emit2(e, 0x41, 0x5F);                    /* pop r15 */
-  emit2(e, 0x41, 0x5E);                    /* pop r14 */
-  emit2(e, 0x41, 0x5D);                    /* pop r13 */
-  emit2(e, 0x41, 0x5C);                    /* pop r12 */
-  emit1(e, 0x5B);                          /* pop rbx */
-  emit1(e, 0xC3);                          /* ret */
+  emit2(e, 0x41, 0x5F);
+  emit2(e, 0x41, 0x5E);
+  emit2(e, 0x41, 0x5D);
+  emit2(e, 0x41, 0x5C);
+  emit1(e, 0x5B);
+  emit1(e, 0xC3);
 }
 
 
@@ -466,6 +489,7 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_DIVK: case OP_IDIVK:
       case OP_GETFIELD:  /* 1.5x via C helper */
       case OP_GETI:      /* 1.2x via C helper */
+      /* OP_CALL: deferred (C helper works but JIT code emission needs fix) */
       /* SETFIELD/SETI: ~1.0x (no gain, C helper ≈ interpreter) → fallback */
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
@@ -602,9 +626,24 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADDI: {
         int b = GETARG_B(inst);
         int sc = GETARG_sC(inst);
-        jit_emit_load_slot(&em, 0, b);
-        jit_emit_addimm(&em, 0, 0, sc);
-        jit_emit_store_slot(&em, a, 0);
+        /* check pinned: R[A] = R[B] + sC */
+        if (npinned >= 1 && a == pinned_slot[0] && b == pinned_slot[0]) {
+          /* r14 += imm (pure register) */
+          emit2(&em, 0x49, 0x81);
+          emit1(&em, 0xC6);  /* add r14, imm32 */
+          emit_u32(&em, (unsigned int)sc);
+        }
+        else {
+          if (npinned >= 1 && b == pinned_slot[0])
+            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF0); }  /* mov rax, r14 */
+          else
+            jit_emit_load_slot(&em, 0, b);
+          jit_emit_addimm(&em, 0, 0, sc);
+          if (npinned >= 1 && a == pinned_slot[0])
+            { emit2(&em, 0x49, 0x89); emit1(&em, 0xC6); }  /* mov r14, rax */
+          else
+            jit_emit_store_slot(&em, a, 0);
+        }
         break;
       }
       case OP_ADD: {
@@ -814,20 +853,39 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_CALL: {
         int b = GETARG_B(inst);
         int c = GETARG_C(inst);
+        /* flush pinned accumulator to stack before C call */
+        if (npinned >= 1) {
+          emit2(&em, 0x4C, 0x89);
+          emit1(&em, 0xB7);  /* mov [rdi+disp], r14 */
+          emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
+        }
+        /* also flush loop var (r9) to R[A+2] */
+        jit_emit_store_slot(&em, ra_for + 2, 5);
+        /* save base and align stack (5 pushes in prologue = odd, need even for call) */
         emit1(&em, 0x57);  /* push rdi (base) */
-        /* luaJ_helper_call(L, base, a, b, c) */
+        emit1(&em, 0x57);  /* push rdi again (alignment pad) */
+        /* luaJ_helper_call(L=rdi, base=rsi, a=rdx, b=rcx, c=r8) */
         { unsigned char bb[] = {0x48, 0x89, 0xFE}; emit_bytes(&em, bb, 3); }
+          /* mov rsi, rdi (base) */
         { unsigned char bb[] = {0x4C, 0x89, 0xEF}; emit_bytes(&em, bb, 3); }
+          /* mov rdi, r13 (L) */
         { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
-          emit_u32(&em, (unsigned int)a); }
+          emit_u32(&em, (unsigned int)a); }  /* mov rdx, a */
         { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
-          emit_u32(&em, (unsigned int)b); }
+          emit_u32(&em, (unsigned int)b); }  /* mov rcx, b */
         { unsigned char bb[] = {0x49, 0xC7, 0xC0}; emit_bytes(&em, bb, 3);
-          emit_u32(&em, (unsigned int)c); }
+          emit_u32(&em, (unsigned int)c); }  /* mov r8, c */
         emit2(&em, 0x48, 0xB8);
         emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_call);
-        emit2(&em, 0xFF, 0xD0);
-        emit1(&em, 0x5F);  /* pop rdi */
+        emit2(&em, 0xFF, 0xD0);  /* call rax */
+        emit1(&em, 0x5F);  /* pop alignment pad */
+        emit1(&em, 0x5F);  /* pop rdi (restore base) */
+        /* reload pinned accumulator from stack after C call */
+        if (npinned >= 1) {
+          emit2(&em, 0x4C, 0x8B);
+          emit1(&em, 0xB7);  /* mov r14, [rdi+disp] */
+          emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
+        }
         break;
       }
       case OP_GETI: {
