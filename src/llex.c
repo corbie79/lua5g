@@ -44,9 +44,9 @@
 /* ORDER RESERVED */
 static const char *const luaX_tokens [] = {
     "and", "break", "class", "do", "else", "elseif",
-    "end", "enum", "extends", "false", "for", "function",
+    "end", "extends", "false", "for", "function",
     "global", "goto", "if", "implements", "in", "interface",
-    "local", "match", "nil", "not", "or", "repeat",
+    "local", "nil", "not", "or", "repeat",
     "return", "then", "true", "until", "while",
     "//", "..", "...", "==", ">=", "<=", "~=",
     "<<", ">>", "::", "<eof>",
@@ -194,7 +194,9 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->glbn = luaS_newliteral(L, "global");  /* get "global" string */
   ls->glbn->extra = 0;  /* mark it as not reserved */
 #endif
-  ls->typn = luaS_newliteral(L, "type");  /* get "type" string */
+  ls->typn = luaS_newliteral(L, "type");
+  ls->matchn = luaS_newliteral(L, "match");
+  ls->enumin = luaS_newliteral(L, "enum");
   ls->classnames = NULL;
   ls->nclasses = 0;
   ls->classnames_size = 0;

@@ -32,10 +32,10 @@
 enum RESERVED {
   /* terminal symbols denoted by reserved words */
   TK_AND = FIRST_RESERVED, TK_BREAK,
-  TK_CLASS, TK_DO, TK_ELSE, TK_ELSEIF, TK_END, TK_ENUM, TK_EXTENDS,
+  TK_CLASS, TK_DO, TK_ELSE, TK_ELSEIF, TK_END, TK_EXTENDS,
   TK_FALSE, TK_FOR, TK_FUNCTION,
   TK_GLOBAL, TK_GOTO, TK_IF, TK_IMPLEMENTS, TK_IN, TK_INTERFACE,
-  TK_LOCAL, TK_MATCH, TK_NIL, TK_NOT, TK_OR,
+  TK_LOCAL, TK_NIL, TK_NOT, TK_OR,
   TK_REPEAT, TK_RETURN, TK_THEN, TK_TRUE, TK_UNTIL, TK_WHILE,
   /* other terminal symbols */
   TK_IDIV, TK_CONCAT, TK_DOTS, TK_EQ, TK_GE, TK_LE, TK_NE,
@@ -80,6 +80,8 @@ typedef struct LexState {
   TString *brkn;  /* "break" name (used as a label) */
   TString *glbn;  /* "global" name (when not a reserved word) */
   TString *typn;  /* "type" name (for type alias statements) */
+  TString *matchn;  /* "match" name (contextual keyword) */
+  TString *enumin;  /* "enum" name (contextual keyword) */
   /* class name registry for compile-time type validation */
   TString **classnames;  /* array of declared class names */
   int nclasses;  /* number of declared classes */

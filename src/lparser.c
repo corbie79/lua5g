@@ -2658,7 +2658,7 @@ static void enumstat (LexState *ls, int line) {
       luaX_syntaxerror(ls, "name or 'end' expected in enum body");
     }
   }
-  check_match(ls, TK_END, TK_ENUM, line);
+  check_match(ls, TK_END, TK_NAME, line);  /* 'enum' is contextual */
 }
 
 
@@ -3179,7 +3179,7 @@ static void matchstat (LexState *ls, int line) {
   luaK_patchtohere(fs, jmp_end_list);
   fs->freereg = cast_byte(reg);  /* free subject */
 
-  check_match(ls, TK_END, TK_MATCH, line);
+  check_match(ls, TK_END, TK_NAME, line);  /* 'match' is contextual */
 }
 
 
@@ -3273,14 +3273,8 @@ static void statement (LexState *ls) {
       interfacestat(ls, line);
       break;
     }
-    case TK_ENUM: {  /* stat -> enumstat */
-      enumstat(ls, line);
-      break;
-    }
-    case TK_MATCH: {  /* stat -> matchstat */
-      matchstat(ls, line);
-      break;
-    }
+    /* TK_ENUM and TK_MATCH removed from reserved words;
+       handled as contextual keywords in TK_NAME below */
     case TK_DBCOLON: {  /* stat -> label */
       luaX_next(ls);  /* skip double colon */
       labelstat(ls, str_checkname(ls), line);
@@ -3305,10 +3299,22 @@ static void statement (LexState *ls) {
       if (ls->t.seminfo.ts == ls->typn) {  /* current = "type"? */
         int lk = luaX_lookahead(ls);
         if (lk == TK_NAME) {
-          /* 'type Name = ...' - type alias statement */
           typestat(ls);
           break;
         }
+      }
+      /* 'enum Name ...' - contextual keyword */
+      if (ls->t.seminfo.ts == ls->enumin) {
+        int lk = luaX_lookahead(ls);
+        if (lk == TK_NAME) {
+          enumstat(ls, line);
+          break;
+        }
+      }
+      /* 'match expr ...' - contextual keyword */
+      if (ls->t.seminfo.ts == ls->matchn) {
+        matchstat(ls, line);
+        break;
       }
 #if defined(LUA_COMPAT_GLOBAL)
       /* compatibility code to parse global keyword when "global"
