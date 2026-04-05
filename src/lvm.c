@@ -30,6 +30,7 @@
 #include "ltable.h"
 #include "ltm.h"
 #include "lvm.h"
+#include "ljit.h"
 
 
 /*
@@ -1851,6 +1852,16 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         savestate(L, ci);  /* in case of errors */
         if (forprep(L, ra))
           pc += GETARG_Bx(i) + 1;  /* skip the loop */
+        else if (cl->p->jit != NULL) {
+          /* JIT compiled trace available: execute native code */
+          JitTrace *trace = cl->p->jit;
+          StkId base_slot = ci->func.p + 1;
+          typedef int (*JitFunc)(void *);
+          JitFunc fn = (JitFunc)trace->code;
+          fn(base_slot);
+          /* skip to after the loop */
+          pc += GETARG_Bx(i) + 1;
+        }
         vmbreak;
       }
       vmcase(OP_TFORPREP) {

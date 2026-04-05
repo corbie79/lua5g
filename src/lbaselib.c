@@ -543,6 +543,68 @@ static int luaB_classrelease (lua_State *L) {
 }
 
 
+/*
+** __jit_compile(func) - JIT compile a function's hot loops
+** __jit_status() - return JIT availability info
+*/
+#include "ljit.h"
+
+static int luaB_jitstatus (lua_State *L) {
+#if defined(JIT_ARCH_X64)
+  lua_pushliteral(L, "x86-64");
+#elif defined(JIT_ARCH_ARM64)
+  lua_pushliteral(L, "arm64");
+#elif defined(JIT_ARCH_X86)
+  lua_pushliteral(L, "x86");
+#elif defined(JIT_ARCH_ARM)
+  lua_pushliteral(L, "arm");
+#else
+  lua_pushliteral(L, "none");
+#endif
+  return 1;
+}
+
+
+static int luaB_jitcompile (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  /* get the Proto from the Lua closure */
+  if (!lua_isfunction(L, 1) || lua_iscfunction(L, 1)) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "not a Lua function");
+    return 2;
+  }
+  /* access the closure's proto via debug API */
+  lua_Debug ar;
+  lua_pushvalue(L, 1);
+  lua_getinfo(L, ">S", &ar);  /* this pops the function */
+
+  /* get the function again and try to JIT its for-loops */
+  lua_pushvalue(L, 1);
+  const LClosure *cl = (const LClosure *)lua_topointer(L, -1);
+  lua_pop(L, 1);
+
+  if (cl == NULL) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "cannot get closure");
+    return 2;
+  }
+
+  Proto *p = cl->p;
+  int compiled = 0;
+  int i;
+  for (i = 0; i < p->sizecode; i++) {
+    if (GET_OPCODE(p->code[i]) == OP_FORPREP) {
+      int res = luaJ_compile(L, p, i);
+      if (res == JIT_OK) compiled++;
+    }
+  }
+
+  lua_pushboolean(L, compiled > 0);
+  lua_pushinteger(L, compiled);
+  return 2;
+}
+
+
 static const luaL_Reg base_funcs[] = {
   {"assert", luaB_assert},
   {"collectgarbage", luaB_collectgarbage},
@@ -569,6 +631,8 @@ static const luaL_Reg base_funcs[] = {
   {"xpcall", luaB_xpcall},
   {"__setup_class", luaB_setupclass},
   {"__class_release", luaB_classrelease},
+  {"__jit_status", luaB_jitstatus},
+  {"__jit_compile", luaB_jitcompile},
   /* placeholders */
   {LUA_GNAME, NULL},
   {"_VERSION", NULL},

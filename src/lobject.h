@@ -623,6 +623,7 @@ typedef struct Proto {
   LocVar *locvars;  /* information about local variables (debug information) */
   TString  *source;  /* used for debug information */
   GCObject *gclist;
+  struct JitTrace *jit;  /* JIT compiled trace (NULL if not compiled) */
 } Proto;
 
 /* }================================================================== */
