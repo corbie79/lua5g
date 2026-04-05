@@ -44,9 +44,9 @@
 /* ORDER RESERVED */
 static const char *const luaX_tokens [] = {
     "and", "break", "class", "do", "else", "elseif",
-    "end", "extends", "false", "for", "function",
-    "global", "goto", "if",
-    "in", "local", "nil", "not", "or", "repeat",
+    "end", "enum", "extends", "false", "for", "function",
+    "global", "goto", "if", "implements", "in", "interface",
+    "local", "match", "nil", "not", "or", "repeat",
     "return", "then", "true", "until", "while",
     "//", "..", "...", "==", ">=", "<=", "~=",
     "<<", ">>", "::", "<eof>",
@@ -201,6 +201,12 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->classfields = NULL;
   ls->nclassfields = 0;
   ls->classfields_size = 0;
+  ls->interfaces = NULL;
+  ls->ninterfaces = 0;
+  ls->interfaces_size = 0;
+  ls->enums = NULL;
+  ls->nenums = 0;
+  ls->enums_size = 0;
   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
 }
 

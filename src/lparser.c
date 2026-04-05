@@ -235,6 +235,19 @@ static TString *parse_type (LexState *ls) {
     case TK_NAME: {
       typename_ = ls->t.seminfo.ts;  /* capture type name */
       luaX_next(ls);  /* skip type name (number, string, boolean, etc.) */
+      /* generic type parameters: Name<T, U, ...> (parsed, no runtime check) */
+      if (ls->t.token == '<') {
+        luaX_next(ls);  /* skip '<' */
+        parse_type(ls);  /* first type parameter */
+        while (ls->t.token == ',') {
+          luaX_next(ls);  /* skip ',' */
+          parse_type(ls);  /* next type parameter */
+        }
+        if (ls->t.token != '>')
+          luaX_syntaxerror(ls, "'>' expected to close generic type");
+        luaX_next(ls);  /* skip '>' */
+        typename_ = NULL;  /* generic types: skip validation/runtime check */
+      }
       break;
     }
     case TK_NIL: {
@@ -2412,6 +2425,201 @@ static void typestat (LexState *ls) {
 
 /*
 ** =======================================================
+** Interface declaration
+** =======================================================
+*/
+
+/*
+** Register an interface in the parser's registry.
+*/
+static void register_interface (LexState *ls, TString *name) {
+  lua_State *L = ls->L;
+  if (ls->ninterfaces >= ls->interfaces_size) {
+    int newsize = (ls->interfaces_size == 0) ? 4 : ls->interfaces_size * 2;
+    ls->interfaces = luaM_reallocvector(L, ls->interfaces,
+                       ls->interfaces_size, newsize, struct InterfaceInfo);
+    ls->interfaces_size = newsize;
+  }
+  struct InterfaceInfo *iface = &ls->interfaces[ls->ninterfaces++];
+  iface->name = name;
+  iface->methods = NULL;
+  iface->nmethods = 0;
+  iface->methods_size = 0;
+}
+
+static struct InterfaceInfo *find_interface (LexState *ls, TString *name) {
+  for (int i = 0; i < ls->ninterfaces; i++) {
+    if (ls->interfaces[i].name == name)
+      return &ls->interfaces[i];
+  }
+  return NULL;
+}
+
+static void interface_add_method (LexState *ls, struct InterfaceInfo *iface,
+                                   TString *method) {
+  lua_State *L = ls->L;
+  if (iface->nmethods >= iface->methods_size) {
+    int newsize = (iface->methods_size == 0) ? 8 : iface->methods_size * 2;
+    iface->methods = luaM_reallocvector(L, iface->methods,
+                       iface->methods_size, newsize, TString *);
+    iface->methods_size = newsize;
+  }
+  iface->methods[iface->nmethods++] = method;
+}
+
+
+/*
+** interfacestat -> INTERFACE NAME { FUNCTION NAME '(' parlist ')' [':' type] }
+**                  END
+** Parsed at compile time only. Stores method signatures for validation
+** when a class uses 'implements'.
+*/
+static void interfacestat (LexState *ls, int line) {
+  TString *ifname;
+  struct InterfaceInfo *iface;
+  luaX_next(ls);  /* skip 'interface' */
+  ifname = str_checkname(ls);
+  register_interface(ls, ifname);
+  /* also register as a valid type name */
+  register_classname(ls, ifname);
+  iface = find_interface(ls, ifname);
+
+  /* parse interface body: method declarations (no bodies) */
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+    if (ls->t.token == TK_FUNCTION) {
+      luaX_next(ls);  /* skip 'function' */
+      TString *mname = str_checkname(ls);
+      interface_add_method(ls, iface, mname);
+      /* parse parameter list (just skip it) */
+      checknext(ls, '(');
+      while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+        if (ls->t.token == TK_NAME) {
+          luaX_next(ls);  /* skip param name */
+          optional_type_annotation(ls);
+        }
+        else if (ls->t.token == TK_DOTS)
+          luaX_next(ls);
+        if (ls->t.token == ',') luaX_next(ls);
+      }
+      checknext(ls, ')');
+      optional_type_annotation(ls);  /* return type */
+      /* no body - just declaration */
+    }
+    else if (ls->t.token == TK_NAME) {
+      /* field declaration: NAME ':' type */
+      luaX_next(ls);
+      if (ls->t.token == ':') {
+        luaX_next(ls);
+        parse_type(ls);
+      }
+    }
+    else if (ls->t.token == ';') {
+      luaX_next(ls);
+    }
+    else {
+      luaX_syntaxerror(ls, "'function' or 'end' expected in interface body");
+    }
+  }
+  check_match(ls, TK_END, TK_INTERFACE, line);
+}
+
+
+/*
+** Check that a class implements all methods required by an interface.
+** Called at compile time after the class body is parsed.
+*/
+static void check_implements (LexState *ls, TString *classname,
+                               TString *ifacename,
+                               TString **class_methods, int nclass_methods) {
+  struct InterfaceInfo *iface = find_interface(ls, ifacename);
+  if (iface == NULL)
+    luaK_semerror(ls, "unknown interface '%s'", getstr(ifacename));
+  for (int i = 0; i < iface->nmethods; i++) {
+    TString *required = iface->methods[i];
+    int found = 0;
+    for (int j = 0; j < nclass_methods; j++) {
+      if (class_methods[j] == required) { found = 1; break; }
+    }
+    if (!found)
+      luaK_semerror(ls, "class '%s' missing method '%s' required by interface '%s'",
+                    getstr(classname), getstr(required), getstr(ifacename));
+  }
+}
+
+
+/*
+** =======================================================
+** Enum declaration
+** =======================================================
+*/
+
+/*
+** enumstat -> ENUM NAME { NAME ['=' expr] {',' NAME ['=' expr]} } END
+** Generates: EnumName = {VALUE1 = 1, VALUE2 = 2, ...}
+*/
+static void enumstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  TString *enumname;
+  expdesc var, val;
+  int pc;
+  int counter = 1;
+
+  luaX_next(ls);  /* skip 'enum' */
+  enumname = str_checkname(ls);
+
+  /* register as valid type name */
+  register_classname(ls, enumname);
+
+  /* Generate: EnumName = {} */
+  buildglobal(ls, enumname, &var);
+  pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+  luaK_code(fs, 0);
+  init_exp(&val, VNONRELOC, fs->freereg);
+  luaK_reserveregs(fs, 1);
+  luaK_settablesize(fs, pc, val.u.info, 0, 0);
+  luaK_storevar(fs, &var, &val);
+  luaK_fixline(fs, line);
+
+  /* parse enum values */
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+    if (ls->t.token == TK_NAME) {
+      TString *vname = str_checkname(ls);
+      expdesc tab, key, vv;
+
+      if (testnext(ls, '=')) {
+        /* explicit value */
+        expr(ls, &vv);
+      }
+      else {
+        /* auto-increment */
+        init_exp(&vv, VKINT, 0);
+        vv.u.ival = counter;
+      }
+      counter++;
+
+      /* EnumName.VALUE = val */
+      buildglobal(ls, enumname, &tab);
+      luaK_exp2anyregup(fs, &tab);
+      codestring(&key, vname);
+      luaK_indexed(fs, &tab, &key);
+      luaK_storevar(fs, &tab, &vv);
+      luaK_fixline(fs, ls->linenumber);
+
+      testnext(ls, ',');  /* optional comma */
+    }
+    else if (ls->t.token == ';') {
+      luaX_next(ls);
+    }
+    else {
+      luaX_syntaxerror(ls, "name or 'end' expected in enum body");
+    }
+  }
+  check_match(ls, TK_END, TK_ENUM, line);
+}
+
+
+/*
+** =======================================================
 ** Class declaration statement
 ** =======================================================
 */
@@ -2421,7 +2629,7 @@ static void typestat (LexState *ls) {
 ** Parse a class body method: function NAME '(' parlist ')' block end
 ** Generates: ClassName.methodName = function(self, ...) ... end
 */
-static void classmethod (LexState *ls, expdesc *classvar, TString *cname) {
+static TString *classmethod (LexState *ls, expdesc *classvar, TString *cname) {
   /* classmethod -> FUNCTION NAME body */
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
@@ -2446,6 +2654,7 @@ static void classmethod (LexState *ls, expdesc *classvar, TString *cname) {
   ls->fs->classctx = saved_classctx;  /* restore */
   luaK_storevar(fs, &tab, &b);
   luaK_fixline(fs, line);
+  return methodname;
 }
 
 
@@ -2479,6 +2688,19 @@ static void classstat (LexState *ls, int line) {
     luaX_next(ls);  /* skip 'extends' */
     parentname = str_checkname(ls);  /* get parent class name */
     hasparent = 1;
+  }
+
+  /* Check for 'implements' (one or more interfaces) */
+  #define MAX_IMPLEMENTS 8
+  TString *impl_ifaces[MAX_IMPLEMENTS];
+  int nimpl = 0;
+  if (ls->t.token == TK_IMPLEMENTS) {
+    luaX_next(ls);  /* skip 'implements' */
+    do {
+      if (nimpl >= MAX_IMPLEMENTS)
+        luaK_semerror(ls, "too many interfaces");
+      impl_ifaces[nimpl++] = str_checkname(ls);
+    } while (testnext(ls, ','));
   }
 
   /*
@@ -2616,12 +2838,19 @@ static void classstat (LexState *ls, int line) {
   int ngetters = 0;
   int nsetters = 0;
 
+  /* track method names for implements checking */
+  #define MAX_CLASS_METHODS 64
+  TString *class_method_names[MAX_CLASS_METHODS];
+  int nclass_methods = 0;
+
   while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
     if (ls->t.token == TK_FUNCTION) {
       /* Method declaration */
       expdesc cv;
       buildglobal(ls, classname, &cv);
-      classmethod(ls, &cv, classname);
+      TString *mname = classmethod(ls, &cv, classname);
+      if (nclass_methods < MAX_CLASS_METHODS)
+        class_method_names[nclass_methods++] = mname;
     }
     else if (ls->t.token == TK_NAME) {
       TString *word = ls->t.seminfo.ts;
@@ -2816,6 +3045,14 @@ static void classstat (LexState *ls, int line) {
     }
   }
 
+  /* Check 'implements' constraints at compile time */
+  {
+    int ii;
+    for (ii = 0; ii < nimpl; ii++)
+      check_implements(ls, classname, impl_ifaces[ii],
+                       class_method_names, nclass_methods);
+  }
+
   check_match(ls, TK_END, TK_CLASS, line);
 }
 
@@ -2868,6 +3105,14 @@ static void statement (LexState *ls) {
     }
     case TK_CLASS: {  /* stat -> classstat */
       classstat(ls, line);
+      break;
+    }
+    case TK_INTERFACE: {  /* stat -> interfacestat */
+      interfacestat(ls, line);
+      break;
+    }
+    case TK_ENUM: {  /* stat -> enumstat */
+      enumstat(ls, line);
       break;
     }
     case TK_DBCOLON: {  /* stat -> label */
@@ -2979,6 +3224,20 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
     luaM_freearray(L, lexstate.classnames, lexstate.classnames_size);
   if (lexstate.classfields != NULL)
     luaM_freearray(L, lexstate.classfields, lexstate.classfields_size);
+  for (int ii = 0; ii < lexstate.ninterfaces; ii++) {
+    if (lexstate.interfaces[ii].methods != NULL)
+      luaM_freearray(L, lexstate.interfaces[ii].methods,
+                     lexstate.interfaces[ii].methods_size);
+  }
+  if (lexstate.interfaces != NULL)
+    luaM_freearray(L, lexstate.interfaces, lexstate.interfaces_size);
+  for (int ii = 0; ii < lexstate.nenums; ii++) {
+    if (lexstate.enums[ii].values != NULL)
+      luaM_freearray(L, lexstate.enums[ii].values,
+                     lexstate.enums[ii].values_size);
+  }
+  if (lexstate.enums != NULL)
+    luaM_freearray(L, lexstate.enums, lexstate.enums_size);
   L->top.p--;  /* remove scanner's table */
   return cl;  /* closure is on the stack, too */
 }
