@@ -624,6 +624,7 @@ typedef struct Proto {
   TString  *source;  /* used for debug information */
   GCObject *gclist;
   struct JitTrace *jit;  /* JIT compiled trace (NULL if not compiled) */
+  unsigned short hotcount;  /* for-loop entry counter for auto JIT */
 } Proto;
 
 /* }================================================================== */

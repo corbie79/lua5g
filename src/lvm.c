@@ -1854,13 +1854,27 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           pc += GETARG_Bx(i) + 1;  /* skip the loop */
         else if (cl->p->jit != NULL) {
           /* JIT compiled trace available: execute native code */
-          JitTrace *trace = cl->p->jit;
-          StkId base_slot = ci->func.p + 1;
           typedef int (*JitFunc)(void *);
-          JitFunc fn = (JitFunc)trace->code;
-          fn(base_slot);
-          /* skip to after the loop */
-          pc += GETARG_Bx(i) + 1;
+          JitFunc fn = (JitFunc)cl->p->jit->code;
+          fn(ci->func.p + 1);
+          pc += GETARG_Bx(i) + 1;  /* skip to after the loop */
+        }
+        else {
+          /* Auto hot loop detection: try JIT after threshold */
+          Proto *p = cl->p;
+          if (p->hotcount < LUA_JIT_THRESHOLD)
+            p->hotcount++;
+          else if (p->hotcount == LUA_JIT_THRESHOLD) {
+            p->hotcount++;  /* only try once */
+            int curpc = pcRel(pc, p);  /* pc of this FORPREP */
+            int jres = luaJ_compile(L, p, curpc);
+            if (jres == JIT_OK && p->jit != NULL) {
+              typedef int (*JitFunc)(void *);
+              JitFunc fn = (JitFunc)p->jit->code;
+              fn(ci->func.p + 1);
+              pc += GETARG_Bx(i) + 1;
+            }
+          }
         }
         vmbreak;
       }

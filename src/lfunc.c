@@ -264,6 +264,7 @@ Proto *luaF_newproto (lua_State *L) {
   f->lastlinedefined = 0;
   f->source = NULL;
   f->jit = NULL;
+  f->hotcount = 0;
   return f;
 }
 

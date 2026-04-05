@@ -373,7 +373,7 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
     switch (op) {
       case OP_MOVE: case OP_LOADI: case OP_LOADK:
       case OP_ADD: case OP_SUB: case OP_MUL:
-      case OP_ADDI: case OP_ADDK:
+      case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
@@ -492,6 +492,56 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         lua_Integer val = GETARG_sBx(inst);
         jit_emit_loadi(&em, 0, val);
         jit_emit_store_slot(&em, a, 0);
+        break;
+      }
+      case OP_LOADK: {
+        /* R[A] = K[Bx] - load constant (must be integer) */
+        int bx = GETARG_Bx(inst);
+        if (bx < p->sizek && ttisinteger(&p->k[bx])) {
+          lua_Integer val = ivalue(&p->k[bx]);
+          jit_emit_loadi(&em, 0, val);
+          jit_emit_store_slot(&em, a, 0);
+        }
+        break;
+      }
+      case OP_ADDK: {
+        /* R[A] = R[B] + K[C] */
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        if (c < p->sizek && ttisinteger(&p->k[c])) {
+          jit_emit_load_slot(&em, 0, b);
+          lua_Integer kval = ivalue(&p->k[c]);
+          /* add rax, imm32 */
+          jit_emit_addimm(&em, 0, 0, (int)kval);
+          jit_emit_store_slot(&em, a, 0);
+        }
+        break;
+      }
+      case OP_SUBK: {
+        /* R[A] = R[B] - K[C] */
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        if (c < p->sizek && ttisinteger(&p->k[c])) {
+          jit_emit_load_slot(&em, 0, b);
+          lua_Integer kval = ivalue(&p->k[c]);
+          /* sub rax, imm32 */
+          emit2(&em, 0x48, 0x2D);
+          emit_u32(&em, (unsigned int)(int)kval);
+          jit_emit_store_slot(&em, a, 0);
+        }
+        break;
+      }
+      case OP_MULK: {
+        /* R[A] = R[B] * K[C] */
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        if (c < p->sizek && ttisinteger(&p->k[c])) {
+          jit_emit_load_slot(&em, 0, b);
+          lua_Integer kval = ivalue(&p->k[c]);
+          jit_emit_loadi(&em, 1, kval);  /* rcx = constant */
+          jit_emit_muli(&em, 0, 0, 1);   /* rax *= rcx */
+          jit_emit_store_slot(&em, a, 0);
+        }
         break;
       }
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
