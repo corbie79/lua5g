@@ -38,8 +38,10 @@
 
 /* JIT compiled trace */
 typedef struct JitTrace {
-  void *code;         /* executable native code pointer */
-  size_t code_size;   /* size of allocated code */
+  void *code;         /* executable native code pointer (int path) */
+  void *fcode;        /* executable native code pointer (float path) */
+  size_t code_size;   /* size of allocated int code */
+  size_t fcode_size;  /* size of allocated float code */
   int startpc;        /* first PC of the compiled region */
   int endpc;          /* last PC of the compiled region */
 } JitTrace;

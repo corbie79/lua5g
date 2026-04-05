@@ -64,7 +64,8 @@ void luaJ_close (lua_State *L) {
 
 void luaJ_freetrace (lua_State *L, JitTrace *trace) {
   if (trace) {
-    jit_free_code(trace->code, trace->code_size);
+    if (trace->code) jit_free_code(trace->code, trace->code_size);
+    if (trace->fcode) jit_free_code(trace->fcode, trace->fcode_size);
     luaM_free(L, trace);
   }
 }
@@ -586,10 +587,153 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
   /* === Epilogue === */
   jit_emit_epilogue(&em);
 
-  /* Create trace */
+  /* ============================================================ */
+  /* Generate float version (SSE2)                                */
+  /* ============================================================ */
+  /*
+  ** Float for-loop after forprep:
+  **   R[A]   = limit (double)
+  **   R[A+1] = step (double)
+  **   R[A+2] = control variable (double, starts at init)
+  **
+  ** Float loop: idx += step; if (step>0 ? idx<=limit : limit<=idx) continue
+  ** For simplicity, only handle step > 0 ascending loops.
+  **
+  ** SSE2 register mapping:
+  **   xmm0 = idx (control), xmm1 = step, xmm2 = limit
+  **   xmm3-xmm7 = scratch for body ops
+  **
+  ** Stack slot value_ offset for float: same as int (offset 0, 8 bytes)
+  */
+  unsigned char *fbuf = (unsigned char *)jit_alloc_code(JIT_MAXCODE);
+  size_t fcode_size = 0;
+  if (fbuf != NULL) {
+    JitEmitter fem;
+    jit_emit_init(&fem, fbuf, JIT_MAXCODE);
+
+    /* prologue */
+    jit_emit_prologue(&fem);
+
+    /* load float loop vars from stack:
+       xmm2 = R[A].value_ (limit)
+       xmm1 = R[A+1].value_ (step)
+       xmm0 = R[A+2].value_ (control/idx) */
+    #define FEMIT(b, n) emit_bytes(&fem, (const unsigned char[]){b}, n)
+    /* movsd xmm2, [rdi + ra_for*SLOT_SIZE] ; limit */
+    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x97};
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)(ra_for * (int)SLOT_SIZE)); }
+    /* movsd xmm1, [rdi + (ra_for+1)*SLOT_SIZE] ; step */
+    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x8F};
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)((ra_for + 1) * (int)SLOT_SIZE)); }
+    /* movsd xmm0, [rdi + (ra_for+2)*SLOT_SIZE] ; idx */
+    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x87};
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
+
+    /* === Loop top === */
+    int floop_top = (int)fem.pos;
+
+    /* === Compile loop body (float versions of ops) === */
+    for (i = pc + 1; i < loop_end_pc; i++) {
+      Instruction inst = code[i];
+      OpCode op = GET_OPCODE(inst);
+      int a = GETARG_A(inst);
+      switch (op) {
+        case OP_ADD: case OP_SUB: case OP_MUL: {
+          int b2 = GETARG_B(inst);
+          int c = GETARG_C(inst);
+          /* movsd xmm3, [rdi + b*SLOT] */
+          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
+          /* addsd/subsd/mulsd xmm3, [rdi + c*SLOT] (memory operand) */
+          { unsigned char opc;
+            if (op == OP_ADD) opc = 0x58;
+            else if (op == OP_SUB) opc = 0x5C;
+            else opc = 0x59; /* MUL */
+            unsigned char bb[] = {0xF2, 0x0F, opc, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(c * (int)SLOT_SIZE)); }
+          /* movsd [rdi + a*SLOT], xmm3 */
+          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+          break;
+        }
+        case OP_ADDI: {
+          int b2 = GETARG_B(inst);
+          int sc = GETARG_sC(inst);
+          /* load R[B] */
+          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
+          /* need to convert int imm to double - use stack temp */
+          /* push imm as int, cvtsi2sd */
+          /* mov eax, imm; cvtsi2sd xmm4, eax; addsd xmm3, xmm4 */
+          { unsigned char bb[] = {0xB8}; emit_bytes(&fem, bb, 1);
+            emit_u32(&fem, (unsigned int)sc); }
+          { unsigned char bb[] = {0xF2, 0x0F, 0x2A, 0xE0};
+            emit_bytes(&fem, bb, 4); } /* cvtsi2sd xmm4, eax */
+          { unsigned char bb[] = {0xF2, 0x0F, 0x58, 0xDC};
+            emit_bytes(&fem, bb, 4); } /* addsd xmm3, xmm4 */
+          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+          break;
+        }
+        case OP_MOVE: {
+          int b2 = GETARG_B(inst);
+          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
+          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
+            emit_bytes(&fem, bb, 4);
+            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+          break;
+        }
+        case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
+        case OP_LOADI: case OP_LOADK: case OP_ADDK:
+        case OP_SUBK: case OP_MULK:
+          break; /* skip or handle later */
+        default:
+          break;
+      }
+    }
+
+    /* === Float loop update: idx += step; if idx <= limit continue === */
+    /* addsd xmm0, xmm1 (idx += step) */
+    { unsigned char b[] = {0xF2, 0x0F, 0x58, 0xC1};
+      emit_bytes(&fem, b, 4); }
+    /* store updated idx to R[A+2] */
+    { unsigned char b[] = {0xF2, 0x0F, 0x11, 0x87};
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
+    /* comisd xmm0, xmm2 (compare idx with limit) */
+    { unsigned char b[] = {0x66, 0x0F, 0x2F, 0xC2};
+      emit_bytes(&fem, b, 4); }
+    /* jbe floop_top (jump if idx <= limit, i.e., CF=1 or ZF=1) */
+    { int rel = floop_top - ((int)fem.pos + 6);
+      unsigned char b[] = {0x0F, 0x86};
+      emit_bytes(&fem, b, 2);
+      emit_u32(&fem, (unsigned int)rel); }
+
+    /* store final idx */
+    { unsigned char b[] = {0xF2, 0x0F, 0x11, 0x87};
+      emit_bytes(&fem, b, 4);
+      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
+
+    jit_emit_epilogue(&fem);
+    fcode_size = fem.pos;
+  }
+
+  /* Create trace with both int and float paths */
   trace = luaM_new(L, JitTrace);
   trace->code = buf;
   trace->code_size = em.pos;
+  trace->fcode = fbuf;
+  trace->fcode_size = fcode_size;
   trace->startpc = pc;
   trace->endpc = loop_end_pc;
 
