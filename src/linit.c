@@ -20,6 +20,9 @@
 #include "lauxlib.h"
 #include "llimits.h"
 
+/* mathx: extended math with batch processing */
+LUAMOD_API int luaopen_mathx (lua_State *L);
+
 
 /*
 ** Standard Libraries. (Must be listed in the same ORDER of their
@@ -36,6 +39,7 @@ static const luaL_Reg stdlibs[] = {
   {LUA_STRLIBNAME, luaopen_string},
   {LUA_TABLIBNAME, luaopen_table},
   {LUA_UTF8LIBNAME, luaopen_utf8},
+  {"mathx", luaopen_mathx},
   {NULL, NULL}
 };
 
