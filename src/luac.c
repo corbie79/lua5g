@@ -655,11 +655,16 @@ static void PrintCode(const Proto* f)
 	printf(COMMENT);
 	if (bx==0) printf("?"); else PrintConstant(f,bx-1);
 	break;
-   case OP_TYPECHECK:
-	printf("%d %d",a,bx);
-	printf(COMMENT "check type(R[%d]) == ", a);
-	PrintConstant(f,bx);
+   case OP_TYPECHECK: {
+	static const char *const typenames[] = {
+	 "number","string","boolean","table","function",
+	 "nil","thread","userdata","any","unknown","class"};
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT "check R[%d] is %s", a,
+	  (b <= 10) ? typenames[b] : "?");
+	if (b == 10) { printf(" "); PrintConstant(f,c); }
 	break;
+   }
    case OP_VARARGPREP:
 	printf("%d",a);
 	break;

@@ -1953,72 +1953,71 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         vmbreak;
       }
       vmcase(OP_TYPECHECK) {
-        /*  A Bx  -- check type(R[A]) matches K[Bx]:string, else error  */
+        /*  A B C -- B = type ID, C = K index for class name (if B==TYPEID_CLASS) */
         TValue *ra = vRA(i);
-        TValue *typek = k + GETARG_Bx(i);
-        const char *expected = getstr(tsvalue(typek));
-        int match = 0;
-        if (strcmp(expected, "any") == 0 || strcmp(expected, "unknown") == 0)
-          match = 1;  /* 'any'/'unknown' matches everything */
-        else if (strcmp(expected, "number") == 0)
-          match = ttisnumber(ra);
-        else if (strcmp(expected, "string") == 0)
-          match = ttisstring(ra);
-        else if (strcmp(expected, "boolean") == 0)
-          match = ttisboolean(ra);
-        else if (strcmp(expected, "table") == 0)
-          match = ttistable(ra);
-        else if (strcmp(expected, "function") == 0)
-          match = ttisfunction(ra);
-        else if (strcmp(expected, "nil") == 0)
-          match = ttisnil(ra);
-        else if (strcmp(expected, "thread") == 0)
-          match = ttisthread(ra);
-        else if (strcmp(expected, "userdata") == 0)
-          match = (ttisfulluserdata(ra) || ttislightuserdata(ra));
-        else {
-          /* Class instance check: look up type name in _ENV,
-             then check if value's metatable chain includes that class */
-          TValue classval;
-          TString *tname = tsvalue(typek);
-          TValue *env = cl->upvals[0]->v.p;  /* _ENV */
-          lu_byte tag;
-          if (ttistable(env)) {
-            tag = luaH_getshortstr(hvalue(env), tname, &classval);
-            if (!tagisempty(tag) && ttistable(&classval) && ttistable(ra)) {
-              /* Walk class hierarchy to check instanceof.
-                 For instance d of Dog extends Animal:
-                   d.metatable = Dog
-                   Dog.metatable = {__index = Animal}
-                 So we check: mt == cls, or mt.metatable.__index == cls,
-                 walking up the chain. */
-              Table *cls = hvalue(&classval);
-              Table *cur = hvalue(ra)->metatable;  /* start: instance's mt */
-              int depth = 0;
-              while (cur != NULL && depth < 20) {
-                if (cur == cls) { match = 1; break; }
-                /* go up: cur's metatable's __index is the parent class */
-                Table *curmt = cur->metatable;
-                if (curmt != NULL) {
-                  TValue idx;
-                  lu_byte itag = luaH_getshortstr(curmt,
-                                    G(L)->tmname[TM_INDEX], &idx);
-                  if (!tagisempty(itag) && ttistable(&idx)) {
-                    cur = hvalue(&idx);  /* parent class table */
+        int typeid = GETARG_B(i);
+        int match;
+        const char *expected;
+        switch (typeid) {
+          case TYPEID_ANY:
+          case TYPEID_UNKNOWN:
+            vmbreak;  /* no check needed - fast exit */
+          case TYPEID_NUMBER:
+            match = ttisnumber(ra); expected = "number"; break;
+          case TYPEID_STRING:
+            match = ttisstring(ra); expected = "string"; break;
+          case TYPEID_BOOLEAN:
+            match = ttisboolean(ra); expected = "boolean"; break;
+          case TYPEID_TABLE:
+            match = ttistable(ra); expected = "table"; break;
+          case TYPEID_FUNCTION:
+            match = ttisfunction(ra); expected = "function"; break;
+          case TYPEID_NIL:
+            match = ttisnil(ra); expected = "nil"; break;
+          case TYPEID_THREAD:
+            match = ttisthread(ra); expected = "thread"; break;
+          case TYPEID_USERDATA:
+            match = (ttisfulluserdata(ra) || ttislightuserdata(ra));
+            expected = "userdata"; break;
+          case TYPEID_CLASS: {
+            /* Class instance check via metatable chain */
+            TValue *typek = k + GETARG_C(i);
+            TString *tname = tsvalue(typek);
+            expected = getstr(tname);
+            match = 0;
+            TValue classval;
+            TValue *env = cl->upvals[0]->v.p;
+            if (ttistable(env)) {
+              lu_byte tag = luaH_getshortstr(hvalue(env), tname, &classval);
+              if (!tagisempty(tag) && ttistable(&classval) && ttistable(ra)) {
+                Table *cls = hvalue(&classval);
+                Table *cur = hvalue(ra)->metatable;
+                int depth = 0;
+                while (cur != NULL && depth < 20) {
+                  if (cur == cls) { match = 1; break; }
+                  Table *curmt = cur->metatable;
+                  if (curmt != NULL) {
+                    TValue idx;
+                    lu_byte itag = luaH_getshortstr(curmt,
+                                      G(L)->tmname[TM_INDEX], &idx);
+                    if (!tagisempty(itag) && ttistable(&idx))
+                      cur = hvalue(&idx);
+                    else break;
                   }
                   else break;
+                  depth++;
                 }
-                else break;
-                depth++;
               }
+              else if (tagisempty(tag))
+                match = 1;  /* class not found: allow */
             }
-            else if (tagisempty(tag))
-              match = 1;  /* class not found in _ENV: allow (forward ref) */
+            else match = 1;
+            break;
           }
-          else
-            match = 1;  /* no _ENV table: skip check */
+          default:
+            match = 1; expected = "?"; break;
         }
-        if (!match && !ttisnil(ra))  /* nil is allowed for nullable types */
+        if (!match && !ttisnil(ra))
           halfProtect(luaG_typecheckerror(L, ra, expected, GETARG_A(i)));
         vmbreak;
       }

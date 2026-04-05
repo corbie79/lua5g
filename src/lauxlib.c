@@ -1375,74 +1375,41 @@ LUALIB_API void luaL_checkinstance (lua_State *L, int arg,
 ** Check if the function calling us (2 levels up) is a method of
 ** the class at 'classidx'. Uses debug.getinfo to get the caller.
 */
+/*
+** Check if caller is a class method using __methods weak set.
+** The __methods table is built by luaL_setupclass and maps
+** function -> true for all class methods, getters, and setters.
+** This gives O(1) lookup instead of iterating the class table.
+*/
 static int is_caller_method (lua_State *L, int classidx) {
   lua_Debug ar;
   int level;
   int top = lua_gettop(L);
   classidx = lua_absindex(L, classidx);
-  /* scan call stack to find a Lua function that is a class method */
+
+  /* get the __methods set (built by luaL_setupclass) */
+  if (lua_getfield(L, classidx, "__methods") != LUA_TTABLE) {
+    lua_settop(L, top);
+    return 0;
+  }
+  int methodsidx = lua_gettop(L);
+
   for (level = 1; level <= 6; level++) {
     if (!lua_getstack(L, level, &ar)) break;
     if (!lua_getinfo(L, "f", &ar)) continue;
-    /* stack top = function at this level */
     if (lua_iscfunction(L, -1)) {
-      lua_pop(L, 1);  /* skip C functions */
+      lua_pop(L, 1);
       continue;
     }
-    /* check if this Lua function is a value in the class table */
-    int calleridx = lua_gettop(L);
-    lua_pushnil(L);
-    while (lua_next(L, classidx) != 0) {
-      /* skip non-function values and internal metamethods */
-      if (lua_isfunction(L, -1) && !lua_iscfunction(L, -1)
-          && lua_rawequal(L, -1, calleridx)) {
-        lua_settop(L, top);  /* clean up */
-        return 1;
-      }
-      lua_pop(L, 1);  /* pop value, keep key */
+    /* O(1) lookup: check if function is in __methods */
+    lua_pushvalue(L, -1);  /* dup function as key */
+    if (lua_rawget(L, methodsidx) != LUA_TNIL) {
+      lua_settop(L, top);
+      return 1;
     }
-    /* check __getters and __setters too */
-    if (lua_getfield(L, classidx, "__getters") == LUA_TTABLE) {
-      lua_pushnil(L);
-      while (lua_next(L, -2) != 0) {
-        if (lua_isfunction(L, -1) && lua_rawequal(L, -1, calleridx)) {
-          lua_settop(L, top);
-          return 1;
-        }
-        lua_pop(L, 1);
-      }
-    }
-    lua_pop(L, 1);
-    if (lua_getfield(L, classidx, "__setters") == LUA_TTABLE) {
-      lua_pushnil(L);
-      while (lua_next(L, -2) != 0) {
-        if (lua_isfunction(L, -1) && lua_rawequal(L, -1, calleridx)) {
-          lua_settop(L, top);
-          return 1;
-        }
-        lua_pop(L, 1);
-      }
-    }
-    lua_pop(L, 1);
-    /* check parent class methods too (for protected access) */
-    if (lua_getmetatable(L, classidx)) {
-      if (lua_getfield(L, -1, "__index") == LUA_TTABLE) {
-        int parentidx = lua_gettop(L);
-        lua_pushnil(L);
-        while (lua_next(L, parentidx) != 0) {
-          if (lua_isfunction(L, -1) && !lua_iscfunction(L, -1)
-              && lua_rawequal(L, -1, calleridx)) {
-            lua_settop(L, top);
-            return 1;
-          }
-          lua_pop(L, 1);
-        }
-      }
-      lua_pop(L, 2);  /* __index + metatable */
-    }
-    lua_pop(L, 1);  /* pop caller function */
+    lua_pop(L, 2);  /* pop nil + function */
   }
-  lua_settop(L, top);  /* restore stack */
+  lua_settop(L, top);
   return 0;
 }
 
@@ -1628,14 +1595,68 @@ static int class_newindex_handler (lua_State *L) {
 */
 LUALIB_API void luaL_setupclass (lua_State *L) {
   /* stack: [class] */
+  int classidx = lua_gettop(L);
+
+  /* Build __methods weak set: {[func]=true, ...} for O(1) method lookup */
+  lua_newtable(L);  /* __methods table */
+
+  /* set weak keys metatable: {__mode = "k"} */
+  lua_newtable(L);
+  lua_pushliteral(L, "k");
+  lua_setfield(L, -2, "__mode");
+  lua_setmetatable(L, -2);
+
+  int methodsidx = lua_gettop(L);
+
+  /* collect all Lua functions from the class table */
+  lua_pushnil(L);
+  while (lua_next(L, classidx) != 0) {
+    if (lua_isfunction(L, -1) && !lua_iscfunction(L, -1)) {
+      lua_pushvalue(L, -1);     /* dup function */
+      lua_pushboolean(L, 1);
+      lua_rawset(L, methodsidx);  /* __methods[func] = true */
+    }
+    lua_pop(L, 1);  /* pop value, keep key */
+  }
+
+  /* also add getters and setters */
+  if (lua_getfield(L, classidx, "__getters") == LUA_TTABLE) {
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+      if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -1);
+        lua_pushboolean(L, 1);
+        lua_rawset(L, methodsidx);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+
+  if (lua_getfield(L, classidx, "__setters") == LUA_TTABLE) {
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+      if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -1);
+        lua_pushboolean(L, 1);
+        lua_rawset(L, methodsidx);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+
+  /* store __methods on class */
+  lua_setfield(L, classidx, "__methods");
+
   /* set __index = closure(class_index_handler, class) */
-  lua_pushvalue(L, -1);  /* push class as upvalue */
+  lua_pushvalue(L, classidx);
   lua_pushcclosure(L, class_index_handler, 1);
-  lua_setfield(L, -2, "__index");
+  lua_setfield(L, classidx, "__index");
 
   /* set __newindex = closure(class_newindex_handler, class) */
-  lua_pushvalue(L, -1);  /* push class as upvalue */
+  lua_pushvalue(L, classidx);
   lua_pushcclosure(L, class_newindex_handler, 1);
-  lua_setfield(L, -2, "__newindex");
+  lua_setfield(L, classidx, "__newindex");
 }
 

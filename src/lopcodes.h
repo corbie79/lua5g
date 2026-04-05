@@ -342,7 +342,24 @@ OP_GETVARG, /* A B C	R[A] := R[B][R[C]], R[B] is vararg parameter    */
 
 OP_ERRNNIL,/*	A Bx	raise error if R[A] ~= nil (K[Bx - 1] is global name)*/
 
-OP_TYPECHECK,/*	A Bx	check type(R[A]) matches K[Bx]:string, else error */
+OP_TYPECHECK,/*	A B C	check type(R[A]) matches B (type ID), K[C] for class name */
+
+/*
+** Type IDs for OP_TYPECHECK fast path (stored in Bx as negative offset).
+** When Bx >= 0, it is a K index (string) for class instance checking.
+** When using luaK_codeABx with TYPEID_*, subtract from OFFSET_sBx.
+*/
+#define TYPEID_NUMBER    0
+#define TYPEID_STRING    1
+#define TYPEID_BOOLEAN   2
+#define TYPEID_TABLE     3
+#define TYPEID_FUNCTION  4
+#define TYPEID_NIL       5
+#define TYPEID_THREAD    6
+#define TYPEID_USERDATA  7
+#define TYPEID_ANY       8   /* no check */
+#define TYPEID_UNKNOWN   9   /* no check, but tracked */
+#define TYPEID_CLASS     10  /* class instance: K[extra] has name */
 
 OP_VARARGPREP,/* 	(adjust varargs)				*/
 

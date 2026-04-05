@@ -80,6 +80,25 @@ static const char *const builtin_types[] = {
 
 
 /*
+** Map type name to numeric TYPEID for OP_TYPECHECK fast path.
+** Returns -1 if not a built-in type (i.e., it's a class name).
+*/
+static int get_typeid (const char *typename_) {
+  if (strcmp(typename_, "number") == 0) return TYPEID_NUMBER;
+  if (strcmp(typename_, "string") == 0) return TYPEID_STRING;
+  if (strcmp(typename_, "boolean") == 0) return TYPEID_BOOLEAN;
+  if (strcmp(typename_, "table") == 0) return TYPEID_TABLE;
+  if (strcmp(typename_, "function") == 0) return TYPEID_FUNCTION;
+  if (strcmp(typename_, "nil") == 0) return TYPEID_NIL;
+  if (strcmp(typename_, "thread") == 0) return TYPEID_THREAD;
+  if (strcmp(typename_, "userdata") == 0) return TYPEID_USERDATA;
+  if (strcmp(typename_, "any") == 0) return TYPEID_ANY;
+  if (strcmp(typename_, "unknown") == 0) return TYPEID_UNKNOWN;
+  return -1;  /* class type */
+}
+
+
+/*
 ** Register a class name in the parser's class registry.
 */
 static void register_classname (LexState *ls, TString *name) {
@@ -2075,10 +2094,18 @@ static void localstat (LexState *ls) {
                 expected, getstr(v->vd.name), actual);
           }
         }
-        /* still emit OP_TYPECHECK for dynamic values (function calls etc) */
+        /* emit OP_TYPECHECK for dynamic values (function calls etc) */
         int reg = v->vd.ridx;
-        int kk = luaK_stringK(fs, v->vd.type_annotation);
-        luaK_codeABx(fs, OP_TYPECHECK, reg, kk);
+        int tid = get_typeid(expected);
+        if (tid >= 0) {
+          /* built-in type: use type ID for fast check (no strcmp) */
+          luaK_codeABC(fs, OP_TYPECHECK, reg, tid, 0);
+        }
+        else {
+          /* class type: use TYPEID_CLASS + K index for class name */
+          int kk = luaK_stringK(fs, v->vd.type_annotation);
+          luaK_codeABC(fs, OP_TYPECHECK, reg, TYPEID_CLASS, kk);
+        }
       }
     }
   }
