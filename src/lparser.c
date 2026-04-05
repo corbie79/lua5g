@@ -3257,40 +3257,6 @@ static void statement (LexState *ls) {
         }
         adjustlocalvars(ls, nnames);
       }
-      else if (ls->t.token == '[') {
-        /* array destructuring: local [a, b, c] = expr */
-        FuncState *fs = ls->fs;
-        TString *names[MAXVARS];
-        int nnames = 0;
-        luaX_next(ls);  /* skip '[' */
-        do {
-          if (nnames >= MAXVARS)
-            luaK_semerror(ls, "too many variables in destructuring");
-          names[nnames++] = str_checkname(ls);
-        } while (testnext(ls, ','));
-        checknext(ls, ']');
-        checknext(ls, '=');
-        /* Step 1: local __tmp = expr */
-        int ai;
-        TString *atmp = luaX_newstring(ls, "(destructure)", 13);
-        new_localvar(ls, atmp);
-        expdesc asrc;
-        expr(ls, &asrc);
-        luaK_exp2nextreg(fs, &asrc);
-        adjustlocalvars(ls, 1);
-        int areg = getlocalvardesc(fs, fs->nactvar - 1)->vd.ridx;
-        /* Step 2: for each name, emit GETI and create local */
-        for (ai = 0; ai < nnames; ai++) {
-          new_localvar(ls, names[ai]);
-          /* emit: R[freereg] = R[areg][ai+1] */
-          int dest = fs->freereg;
-          luaK_codeABC(fs, OP_GETI, dest, areg, ai + 1);
-          luaK_reserveregs(fs, 1);
-          adjustlocalvars(ls, 1);
-          /* fix: the local's startpc should include this GETI */
-          localdebuginfo(fs, fs->nactvar - 1)->startpc = fs->pc - 1;
-        }
-      }
       else
         localstat(ls);
       break;
