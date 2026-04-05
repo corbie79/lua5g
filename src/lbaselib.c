@@ -544,6 +544,61 @@ static int luaB_classrelease (lua_State *L) {
 
 
 /*
+** async(func) - wrap function as coroutine-based async
+** await(promise) - yield from async, resume with result
+** async_run(func, ...) - run async function to completion
+*/
+static int luaB_async (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  /* wrap: return function(...) return coroutine.create(func), ... end */
+  lua_getglobal(L, "coroutine");
+  lua_getfield(L, -1, "wrap");
+  lua_pushvalue(L, 1);  /* the async function */
+  lua_call(L, 1, 1);    /* coroutine.wrap(func) */
+  return 1;
+}
+
+static int luaB_await (lua_State *L) {
+  /* await = coroutine.yield */
+  return lua_yield(L, lua_gettop(L));
+}
+
+static int luaB_async_run (lua_State *L) {
+  /* run async function to completion, collecting results */
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  int nargs = lua_gettop(L) - 1;
+  /* create coroutine */
+  lua_State *co = lua_newthread(L);
+  lua_pushvalue(L, 1);  /* push function */
+  lua_xmove(L, co, 1);  /* move to coroutine */
+  for (int i = 0; i < nargs; i++) {
+    lua_pushvalue(L, i + 2);
+    lua_xmove(L, co, 1);
+  }
+  /* resume until done */
+  int nres;
+  while (1) {
+    int status = lua_resume(co, L, nargs, &nres);
+    if (status == LUA_OK) {
+      /* done: move results back */
+      lua_xmove(co, L, nres);
+      return nres;
+    }
+    else if (status == LUA_YIELD) {
+      /* yielded: get yielded values, process, resume */
+      /* for simple case: just resume immediately */
+      nargs = 0;
+    }
+    else {
+      /* error */
+      lua_xmove(co, L, 1);  /* move error message */
+      return lua_error(L);
+    }
+  }
+}
+
+
+/*
 ** __jit_compile(func) - JIT compile a function's hot loops
 ** __jit_status() - return JIT availability info
 */
@@ -631,6 +686,9 @@ static const luaL_Reg base_funcs[] = {
   {"xpcall", luaB_xpcall},
   {"__setup_class", luaB_setupclass},
   {"__class_release", luaB_classrelease},
+  {"async", luaB_async},
+  {"await", luaB_await},
+  {"async_run", luaB_async_run},
   {"__jit_status", luaB_jitstatus},
   {"__jit_compile", luaB_jitcompile},
   /* placeholders */

@@ -3498,6 +3498,65 @@ static void statement (LexState *ls) {
           break;
         }
       }
+      /* import "module" → local module = require("module")
+         import NAME from "module" → local NAME = require("module") */
+      if (ls->t.seminfo.ts == ls->importn) {
+        FuncState *fs = ls->fs;
+        luaX_next(ls);  /* skip 'import' */
+        if (ls->t.token == TK_STRING) {
+          /* import "modname" → local modname = require("modname") */
+          TString *modstr = ls->t.seminfo.ts;
+          /* extract module name from path (last component) */
+          const char *ms = getstr(modstr);
+          const char *lastdot = ms;
+          for (const char *p = ms; *p; p++)
+            if (*p == '.' || *p == '/') lastdot = p + 1;
+          TString *localname = luaX_newstring(ls, lastdot, strlen(lastdot));
+          luaX_next(ls);  /* skip string */
+          /* generate: local localname = require("modstr") */
+          new_localvar(ls, localname);
+          expdesc req, arg;
+          buildglobal(ls, luaX_newstring(ls, "require", 7), &req);
+          luaK_exp2nextreg(fs, &req);
+          int base = fs->freereg - 1;
+          codestring(&arg, modstr);
+          luaK_exp2nextreg(fs, &arg);
+          init_exp(&req, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 2));
+          luaK_fixline(fs, ls->linenumber);
+          fs->freereg = cast_byte(base + 1);
+          adjustlocalvars(ls, 1);
+        }
+        else if (ls->t.token == TK_NAME) {
+          /* import NAME from "module" */
+          TString *localname = ls->t.seminfo.ts;
+          luaX_next(ls);  /* skip NAME */
+          /* expect 'from' */
+          if (ls->t.token != TK_NAME ||
+              strcmp(getstr(ls->t.seminfo.ts), "from") != 0)
+            luaX_syntaxerror(ls, "'from' expected in import statement");
+          luaX_next(ls);  /* skip 'from' */
+          if (ls->t.token != TK_STRING)
+            luaX_syntaxerror(ls, "module name string expected");
+          TString *modstr = ls->t.seminfo.ts;
+          luaX_next(ls);  /* skip string */
+          /* generate: local NAME = require("module") */
+          new_localvar(ls, localname);
+          expdesc req, arg;
+          buildglobal(ls, luaX_newstring(ls, "require", 7), &req);
+          luaK_exp2nextreg(fs, &req);
+          int base = fs->freereg - 1;
+          codestring(&arg, modstr);
+          luaK_exp2nextreg(fs, &arg);
+          init_exp(&req, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 2));
+          luaK_fixline(fs, ls->linenumber);
+          fs->freereg = cast_byte(base + 1);
+          adjustlocalvars(ls, 1);
+        }
+        else {
+          luaX_syntaxerror(ls, "string or name expected after 'import'");
+        }
+        break;
+      }
 #if defined(LUA_COMPAT_GLOBAL)
       /* compatibility code to parse global keyword when "global"
          is not reserved */

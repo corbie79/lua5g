@@ -197,6 +197,7 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->typn = luaS_newliteral(L, "type");
   ls->matchn = luaS_newliteral(L, "match");
   ls->enumin = luaS_newliteral(L, "enum");
+  ls->importn = luaS_newliteral(L, "import");
   ls->classnames = NULL;
   ls->nclasses = 0;
   ls->classnames_size = 0;

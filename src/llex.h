@@ -82,6 +82,7 @@ typedef struct LexState {
   TString *typn;  /* "type" name (for type alias statements) */
   TString *matchn;  /* "match" name (contextual keyword) */
   TString *enumin;  /* "enum" name (contextual keyword) */
+  TString *importn; /* "import" name (contextual keyword) */
   /* class name registry for compile-time type validation */
   TString **classnames;  /* array of declared class names */
   int nclasses;  /* number of declared classes */
