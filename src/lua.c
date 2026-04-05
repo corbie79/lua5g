@@ -90,6 +90,7 @@ static void print_usage (const char *badoption) {
   lua_writestringerror(
   "usage: %s [options] [script [args]]\n"
   "Available options are:\n"
+  "  -d file   load declaration file (.d.lua)\n"
   "  -e stat   execute string 'stat'\n"
   "  -i        enter interactive mode after executing 'script'\n"
   "  -l mod    require library 'mod' into global 'mod'\n"
@@ -324,9 +325,10 @@ static int collectargs (char **argv, int *first) {
           return has_error;  /* invalid option */
         args |= has_v;
         break;
+      case 'd':  /* declaration file */
       case 'e':
         args |= has_e;  /* FALLTHROUGH */
-      case 'l':  /* both options need an argument */
+      case 'l':  /* options needing an argument */
         if (argv[i][2] == '\0') {  /* no concatenated argument? */
           i++;  /* try next 'argv' */
           if (argv[i] == NULL || argv[i][0] == '-')
@@ -354,9 +356,27 @@ static int runargs (lua_State *L, char **argv, int n) {
     int option = argv[i][1];
     lua_assert(argv[i][0] == '-');  /* already checked */
     switch (option) {
+      case 'd': {
+        /* load and execute declaration file (.d.lua)
+           This registers declared classes as globals (empty tables)
+           and populates the type registry for subsequent scripts. */
+        char *extra = argv[i] + 2;
+        if (*extra == '\0') extra = argv[++i];
+        lua_assert(extra != NULL);
+        int status = luaL_loadfilex(L, extra, "t");
+        if (status == LUA_OK)
+          status = lua_pcall(L, 0, 0, 0);  /* execute declarations */
+        if (status != LUA_OK) {
+          const char *msg = lua_tostring(L, -1);
+          l_message(progname, msg);
+          lua_pop(L, 1);
+          return 0;
+        }
+        break;
+      }
       case 'e':  case 'l': {
         int status;
-        char *extra = argv[i] + 2;  /* both options need an argument */
+        char *extra = argv[i] + 2;
         if (*extra == '\0') extra = argv[++i];
         lua_assert(extra != NULL);
         status = (option == 'e')

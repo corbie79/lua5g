@@ -204,6 +204,12 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->classfields = NULL;
   ls->nclassfields = 0;
   ls->classfields_size = 0;
+  ls->classmethods = NULL;
+  ls->nclassmethods = 0;
+  ls->classmethods_size = 0;
+  ls->classparents = NULL;
+  ls->nclassparents = 0;
+  ls->classparents_size = 0;
   ls->interfaces = NULL;
   ls->ninterfaces = 0;
   ls->interfaces_size = 0;

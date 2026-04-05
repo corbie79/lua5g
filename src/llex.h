@@ -95,6 +95,20 @@ typedef struct LexState {
   } *classfields;
   int nclassfields;
   int classfields_size;
+  /* class method registry for override checking */
+  struct ClassMethodInfo {
+    TString *classname;
+    TString *methodname;
+  } *classmethods;
+  int nclassmethods;
+  int classmethods_size;
+  /* class parent registry for override checking */
+  struct ClassParentInfo {
+    TString *classname;
+    TString *parentname;  /* NULL if no parent */
+  } *classparents;
+  int nclassparents;
+  int classparents_size;
   /* interface registry for compile-time method checking */
   struct InterfaceInfo {
     TString *name;          /* interface name */

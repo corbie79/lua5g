@@ -161,6 +161,63 @@ static int check_field_access (LexState *ls, TString *classname,
 
 
 /*
+** Register a class method for override checking.
+*/
+static void register_classmethod_info (LexState *ls, TString *classname,
+                                        TString *methodname) {
+  lua_State *L = ls->L;
+  if (ls->nclassmethods >= ls->classmethods_size) {
+    int newsize = (ls->classmethods_size == 0) ? 32 : ls->classmethods_size * 2;
+    ls->classmethods = luaM_reallocvector(L, ls->classmethods,
+                         ls->classmethods_size, newsize, struct ClassMethodInfo);
+    ls->classmethods_size = newsize;
+  }
+  ls->classmethods[ls->nclassmethods].classname = classname;
+  ls->classmethods[ls->nclassmethods].methodname = methodname;
+  ls->nclassmethods++;
+}
+
+static void register_classparent (LexState *ls, TString *classname,
+                                   TString *parentname) {
+  lua_State *L = ls->L;
+  if (ls->nclassparents >= ls->classparents_size) {
+    int newsize = (ls->classparents_size == 0) ? 8 : ls->classparents_size * 2;
+    ls->classparents = luaM_reallocvector(L, ls->classparents,
+                         ls->classparents_size, newsize, struct ClassParentInfo);
+    ls->classparents_size = newsize;
+  }
+  ls->classparents[ls->nclassparents].classname = classname;
+  ls->classparents[ls->nclassparents].parentname = parentname;
+  ls->nclassparents++;
+}
+
+/*
+** Check if a method name exists in a class or its parent chain.
+** Used for override validation.
+*/
+static int method_exists_in_parent (LexState *ls, TString *classname,
+                                     TString *methodname) {
+  /* find parent of classname */
+  TString *parent = NULL;
+  for (int i = 0; i < ls->nclassparents; i++) {
+    if (ls->classparents[i].classname == classname) {
+      parent = ls->classparents[i].parentname;
+      break;
+    }
+  }
+  if (parent == NULL) return 0;  /* no parent */
+  /* check if method exists in parent */
+  for (int i = 0; i < ls->nclassmethods; i++) {
+    if (ls->classmethods[i].classname == parent &&
+        ls->classmethods[i].methodname == methodname)
+      return 1;
+  }
+  /* check parent's parent recursively */
+  return method_exists_in_parent(ls, parent, methodname);
+}
+
+
+/*
 ** Register a class name in the parser's class registry.
 */
 static void register_classname (LexState *ls, TString *name) {
@@ -807,6 +864,18 @@ static void buildglobal (LexState *ls, TString *varname, expdesc *var) {
 */
 static void buildvar (LexState *ls, TString *varname, expdesc *var) {
   FuncState *fs = ls->fs;
+  /* 'super' keyword: resolve to parent class in class method context */
+  if (fs->classctx != NULL &&
+      strcmp(getstr(varname), "super") == 0) {
+    /* find parent of current class */
+    for (int i = 0; i < ls->nclassparents; i++) {
+      if (ls->classparents[i].classname == fs->classctx &&
+          ls->classparents[i].parentname != NULL) {
+        varname = ls->classparents[i].parentname;
+        break;
+      }
+    }
+  }
   init_exp(var, VGLOBAL, -1);  /* global by default */
   singlevaraux(fs, varname, var, 1);
   if (var->k == VGLOBAL) {  /* global name? */
@@ -2828,6 +2897,8 @@ static void classstat (LexState *ls, int line) {
     parentname = str_checkname(ls);  /* get parent class name */
     hasparent = 1;
   }
+  /* register parent relationship for override checking */
+  register_classparent(ls, classname, parentname);
 
   /* Check for 'implements' (one or more interfaces) */
   #define MAX_IMPLEMENTS 8
@@ -2986,16 +3057,79 @@ static void classstat (LexState *ls, int line) {
 
   while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
     if (ls->t.token == TK_FUNCTION) {
-      /* Method declaration */
+      /* Method declaration - check override requirement */
       expdesc cv;
       buildglobal(ls, classname, &cv);
-      TString *mname = classmethod(ls, &cv, classname);
-      if (nclass_methods < MAX_CLASS_METHODS)
-        class_method_names[nclass_methods++] = mname;
+      /* peek at method name to check override */
+      int saved_tok = ls->t.token;
+      luaX_next(ls);  /* skip 'function' */
+      TString *peekname = ls->t.seminfo.ts;
+      /* check: does this method exist in parent? */
+      if (hasparent && method_exists_in_parent(ls, classname, peekname))
+        luaK_semerror(ls,
+          "method '%s' exists in parent class; use 'override function %s' to override",
+          getstr(peekname), getstr(peekname));
+      /* put tokens back and let classmethod handle normally */
+      /* Actually classmethod expects to skip 'function' itself,
+         but we already skipped it. Push name back via unread... */
+      /* Simpler: just call the rest of classmethod inline */
+      {
+        int line = ls->linenumber;
+        expdesc key, b;
+        TString *methodname = str_checkname(ls);
+        codestring(&key, methodname);
+        expdesc tab = cv;
+        luaK_exp2anyregup(fs, &tab);
+        luaK_indexed(fs, &tab, &key);
+        TString *saved = ls->fs->classctx;
+        body_classctx(ls, &b, 0, line, classname);
+        ls->fs->classctx = saved;
+        luaK_storevar(fs, &tab, &b);
+        luaK_fixline(fs, line);
+        /* register method */
+        register_classmethod_info(ls, classname, methodname);
+        if (nclass_methods < MAX_CLASS_METHODS)
+          class_method_names[nclass_methods++] = methodname;
+      }
     }
     else if (ls->t.token == TK_NAME) {
-      /* Check for 'static', 'abstract', 'operator' keywords */
+      /* Check for 'static', 'abstract', 'operator', 'override' keywords */
       const char *kw = getstr(ls->t.seminfo.ts);
+
+      /* override function NAME(...) - explicit parent method override */
+      if (strcmp(kw, "override") == 0) {
+        luaX_next(ls);  /* skip 'override' */
+        if (ls->t.token != TK_FUNCTION)
+          luaX_syntaxerror(ls, "'function' expected after 'override'");
+        luaX_next(ls);  /* skip 'function' */
+        TString *mname = ls->t.seminfo.ts;
+        /* verify method DOES exist in parent */
+        if (!method_exists_in_parent(ls, classname, mname))
+          luaK_semerror(ls,
+            "override '%s': method not found in parent class",
+            getstr(mname));
+        /* compile as normal method */
+        expdesc cv;
+        buildglobal(ls, classname, &cv);
+        {
+          int line = ls->linenumber;
+          expdesc key, b;
+          TString *methodname = str_checkname(ls);
+          codestring(&key, methodname);
+          expdesc tab = cv;
+          luaK_exp2anyregup(fs, &tab);
+          luaK_indexed(fs, &tab, &key);
+          TString *saved = ls->fs->classctx;
+          body_classctx(ls, &b, 0, line, classname);
+          ls->fs->classctx = saved;
+          luaK_storevar(fs, &tab, &b);
+          luaK_fixline(fs, line);
+          register_classmethod_info(ls, classname, methodname);
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = methodname;
+        }
+        continue;
+      }
 
       /* static function NAME(...) - stored on class table directly */
       if (strcmp(kw, "static") == 0) {
@@ -3490,8 +3624,72 @@ static void statement (LexState *ls) {
       break;
     }
     case TK_NAME: {
-      /* check for 'type' keyword (not reserved, to preserve type() function) */
-      if (ls->t.seminfo.ts == ls->typn) {  /* current = "type"? */
+      /* 'declare class NAME ... end' - declaration-only class (no codegen) */
+      if (strcmp(getstr(ls->t.seminfo.ts), "declare") == 0) {
+        int lk = luaX_lookahead(ls);
+        if (lk == TK_CLASS) {
+          luaX_next(ls);  /* skip 'declare' */
+          luaX_next(ls);  /* skip 'class' */
+          TString *dname = str_checkname(ls);
+          /* register class name and optionally parent */
+          register_classname(ls, dname);
+          TString *dparent = NULL;
+          if (ls->t.token == TK_EXTENDS) {
+            luaX_next(ls);
+            dparent = str_checkname(ls);
+          }
+          register_classparent(ls, dname, dparent);
+          /* Generate minimal: ClassName = ClassName or {}
+             This creates a placeholder table if not already set by C */
+          {
+            FuncState *fs = ls->fs;
+            expdesc var, val;
+            int pc;
+            buildglobal(ls, dname, &var);
+            pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+            luaK_code(fs, 0);
+            init_exp(&val, VNONRELOC, fs->freereg);
+            luaK_reserveregs(fs, 1);
+            luaK_settablesize(fs, pc, val.u.info, 0, 0);
+            luaK_storevar(fs, &var, &val);
+            luaK_fixline(fs, line);
+          }
+          /* parse body: methods (no bodies) and fields */
+          while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+            if (ls->t.token == TK_FUNCTION) {
+              luaX_next(ls);  /* skip 'function' */
+              TString *mname = str_checkname(ls);
+              register_classmethod_info(ls, dname, mname);
+              /* skip params */
+              checknext(ls, '(');
+              while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+                if (ls->t.token == TK_NAME) {
+                  luaX_next(ls);
+                  optional_type_annotation(ls);
+                }
+                else if (ls->t.token == TK_DOTS) luaX_next(ls);
+                if (ls->t.token == ',') luaX_next(ls);
+              }
+              checknext(ls, ')');
+              optional_type_annotation(ls);
+            }
+            else if (ls->t.token == TK_NAME) {
+              /* field or modifier: just skip */
+              luaX_next(ls);
+              if (ls->t.token == ':') {
+                luaX_next(ls);
+                parse_type(ls);
+              }
+            }
+            else if (ls->t.token == ';') luaX_next(ls);
+            else break;
+          }
+          check_match(ls, TK_END, TK_CLASS, line);
+          break;
+        }
+      }
+      /* check for 'type' keyword */
+      if (ls->t.seminfo.ts == ls->typn) {
         int lk = luaX_lookahead(ls);
         if (lk == TK_NAME) {
           typestat(ls);
@@ -3637,6 +3835,10 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
     luaM_freearray(L, lexstate.classnames, lexstate.classnames_size);
   if (lexstate.classfields != NULL)
     luaM_freearray(L, lexstate.classfields, lexstate.classfields_size);
+  if (lexstate.classmethods != NULL)
+    luaM_freearray(L, lexstate.classmethods, lexstate.classmethods_size);
+  if (lexstate.classparents != NULL)
+    luaM_freearray(L, lexstate.classparents, lexstate.classparents_size);
   for (int ii = 0; ii < lexstate.ninterfaces; ii++) {
     if (lexstate.interfaces[ii].methods != NULL)
       luaM_freearray(L, lexstate.interfaces[ii].methods,
