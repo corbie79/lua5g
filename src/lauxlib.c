@@ -1207,6 +1207,31 @@ LUALIB_API void luaL_checkversion_ (lua_State *L, lua_Number ver, size_t sz) {
 
 
 /*
+** Runtime release mode flag. When non-zero, private/protected access
+** checks are skipped (readonly + getter/setter still enforced).
+** Controlled via __class_release(bool) from Lua, or LUA_CLASS_RELEASE
+** compile flag.
+*/
+#if defined(LUA_CLASS_RELEASE)
+static int class_release_mode = 1;
+#else
+static int class_release_mode = 0;
+#endif
+
+
+LUALIB_API void luaL_setclassrelease (lua_State *L, int mode) {
+  (void)L;
+  class_release_mode = mode;
+}
+
+
+LUALIB_API int luaL_getclassrelease (lua_State *L) {
+  (void)L;
+  return class_release_mode;
+}
+
+
+/*
 ** Helper: get the registry key for a class name.
 ** Class tables are stored in the registry as "class:ClassName"
 */
@@ -1382,6 +1407,9 @@ LUALIB_API void luaL_checkinstance (lua_State *L, int arg,
 ** This gives O(1) lookup instead of iterating the class table.
 */
 static int is_caller_method (lua_State *L, int classidx) {
+  /* release mode: skip expensive stack inspection, allow all access */
+  if (class_release_mode) return 1;
+
   lua_Debug ar;
   int level;
   int top = lua_gettop(L);

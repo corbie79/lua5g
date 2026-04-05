@@ -83,6 +83,14 @@ typedef struct LexState {
   TString **classnames;  /* array of declared class names */
   int nclasses;  /* number of declared classes */
   int classnames_size;  /* allocated size */
+  /* class field access info for compile-time access checking */
+  struct ClassFieldAccess {
+    TString *classname;
+    TString *fieldname;
+    lu_byte access;  /* 1=private, 2=protected, 3=readonly */
+  } *classfields;
+  int nclassfields;
+  int classfields_size;
 } LexState;
 
 

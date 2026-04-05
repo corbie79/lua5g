@@ -525,6 +525,24 @@ static int luaB_setupclass (lua_State *L) {
 }
 
 
+/*
+** __class_release(mode) - switch release mode on/off
+** In release mode, private/protected checks are skipped (zero cost).
+** Readonly and getter/setter still enforced.
+**   __class_release(true)   -- enable release mode
+**   __class_release(false)  -- enable debug mode (default)
+**   __class_release()       -- return current mode
+*/
+static int luaB_classrelease (lua_State *L) {
+  if (lua_gettop(L) == 0) {
+    lua_pushboolean(L, luaL_getclassrelease(L));
+    return 1;
+  }
+  luaL_setclassrelease(L, lua_toboolean(L, 1));
+  return 0;
+}
+
+
 static const luaL_Reg base_funcs[] = {
   {"assert", luaB_assert},
   {"collectgarbage", luaB_collectgarbage},
@@ -550,6 +568,7 @@ static const luaL_Reg base_funcs[] = {
   {"type", luaB_type},
   {"xpcall", luaB_xpcall},
   {"__setup_class", luaB_setupclass},
+  {"__class_release", luaB_classrelease},
   /* placeholders */
   {LUA_GNAME, NULL},
   {"_VERSION", NULL},

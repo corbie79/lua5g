@@ -98,6 +98,68 @@ static int get_typeid (const char *typename_) {
 }
 
 
+/* access modifier codes */
+#define ACCESS_PRIVATE    1
+#define ACCESS_PROTECTED  2
+#define ACCESS_READONLY   3
+
+
+/*
+** Register a class field's access modifier for compile-time checking.
+*/
+static void register_classfield (LexState *ls, TString *classname,
+                                  TString *fieldname, lu_byte access) {
+  lua_State *L = ls->L;
+  if (ls->nclassfields >= ls->classfields_size) {
+    int newsize = (ls->classfields_size == 0) ? 16 : ls->classfields_size * 2;
+    ls->classfields = luaM_reallocvector(L, ls->classfields,
+                        ls->classfields_size, newsize,
+                        struct ClassFieldAccess);
+    ls->classfields_size = newsize;
+  }
+  struct ClassFieldAccess *cf = &ls->classfields[ls->nclassfields++];
+  cf->classname = classname;
+  cf->fieldname = fieldname;
+  cf->access = access;
+}
+
+
+/*
+** Check at compile time if accessing 'fieldname' on a variable of type
+** 'classname' is allowed from the current function context.
+** Returns 0 if OK, or the access code (1=private, 2=protected) if blocked.
+*/
+static int check_field_access (LexState *ls, TString *classname,
+                                TString *fieldname) {
+  int i;
+  FuncState *fs = ls->fs;
+  for (i = 0; i < ls->nclassfields; i++) {
+    struct ClassFieldAccess *cf = &ls->classfields[i];
+    if (cf->classname == classname && cf->fieldname == fieldname) {
+      if (cf->access == ACCESS_PRIVATE) {
+        /* private: only allowed inside methods of the same class */
+        if (fs->classctx != classname)
+          return ACCESS_PRIVATE;
+      }
+      else if (cf->access == ACCESS_PROTECTED) {
+        /* protected: allowed in same class or parent class methods */
+        /* (simplified: check if classctx is set and is the class or a parent) */
+        if (fs->classctx == NULL)
+          return ACCESS_PROTECTED;
+        /* if classctx == classname, OK */
+        if (fs->classctx != classname) {
+          /* check if classctx's parent chain includes classname */
+          /* for now, allow if any classctx is set (simplified) */
+          /* TODO: walk parent chain */
+        }
+      }
+      break;
+    }
+  }
+  return 0;  /* access OK */
+}
+
+
 /*
 ** Register a class name in the parser's class registry.
 */
@@ -1027,6 +1089,7 @@ static void open_func (LexState *ls, FuncState *fs, BlockCnt *bl) {
   fs->ndebugvars = 0;
   fs->nactvar = 0;
   fs->needclose = 0;
+  fs->classctx = NULL;  /* not inside a class method by default */
   fs->firstlocal = ls->dyd->actvar.n;
   fs->firstlabel = ls->dyd->label.n;
   fs->bl = NULL;
@@ -1101,6 +1164,27 @@ static void fieldsel (LexState *ls, expdesc *v) {
   /* fieldsel -> ['.' | ':'] NAME */
   FuncState *fs = ls->fs;
   expdesc key;
+  /* compile-time access check: if v is a typed local variable with a class
+     type, check if the field is private/protected */
+  if (v->k == VLOCAL && ls->nclassfields > 0) {
+    Vardesc *vd = getlocalvardesc(fs, v->u.var.vidx);
+    if (vd->vd.type_annotation != NULL) {
+      /* peek at the field name (next token after dot/colon) */
+      int nexttoken = luaX_lookahead(ls);
+      if (nexttoken == TK_NAME) {
+        TString *fieldname = ls->lookahead.seminfo.ts;
+        int blocked = check_field_access(ls, vd->vd.type_annotation, fieldname);
+        if (blocked == ACCESS_PRIVATE)
+          luaK_semerror(ls,
+            "cannot access private field '%s' of class '%s'",
+            getstr(fieldname), getstr(vd->vd.type_annotation));
+        else if (blocked == ACCESS_PROTECTED)
+          luaK_semerror(ls,
+            "cannot access protected field '%s' of class '%s'",
+            getstr(fieldname), getstr(vd->vd.type_annotation));
+      }
+    }
+  }
   luaK_exp2anyregup(fs, v);
   luaX_next(ls);  /* skip the dot or colon */
   codename(ls, &key);
@@ -1314,13 +1398,22 @@ static void parlist (LexState *ls) {
 }
 
 
+static void body_classctx (LexState *ls, expdesc *e, int ismethod,
+                           int line, TString *classctx);
+
 static void body (LexState *ls, expdesc *e, int ismethod, int line) {
+  body_classctx(ls, e, ismethod, line, NULL);
+}
+
+static void body_classctx (LexState *ls, expdesc *e, int ismethod,
+                           int line, TString *classctx) {
   /* body ->  '(' parlist ')' [':' type] block END */
   FuncState new_fs;
   BlockCnt bl;
   new_fs.f = addprototype(ls);
   new_fs.f->linedefined = line;
   open_func(ls, &new_fs, &bl);
+  new_fs.classctx = classctx;  /* set class context for access checking */
   checknext(ls, '(');
   if (ismethod) {
     new_localvarliteral(ls, "self");  /* create 'self' parameter */
@@ -2328,7 +2421,7 @@ static void typestat (LexState *ls) {
 ** Parse a class body method: function NAME '(' parlist ')' block end
 ** Generates: ClassName.methodName = function(self, ...) ... end
 */
-static void classmethod (LexState *ls, expdesc *classvar) {
+static void classmethod (LexState *ls, expdesc *classvar, TString *cname) {
   /* classmethod -> FUNCTION NAME body */
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
@@ -2341,8 +2434,16 @@ static void classmethod (LexState *ls, expdesc *classvar) {
   expdesc tab = *classvar;
   luaK_exp2anyregup(fs, &tab);
   luaK_indexed(fs, &tab, &key);  /* tab = ClassName[methodName] */
-  /* parse function body (not a method - 'self' is explicit first param) */
-  body(ls, &b, 0, line);
+  /* parse function body with class context set */
+  /* body() will call open_func which creates a new FuncState;
+     we set classctx on that new FuncState after open_func via
+     a temporary stored in ls */
+  TString *saved_classctx = ls->fs->classctx;
+  /* The body() function will create a new FuncState. We need to set
+     classctx on the NEW FuncState. Use a trick: set it on the current
+     fs, and body's open_func will inherit it from prev. */
+  body_classctx(ls, &b, 0, line, cname);
+  ls->fs->classctx = saved_classctx;  /* restore */
   luaK_storevar(fs, &tab, &b);
   luaK_fixline(fs, line);
 }
@@ -2520,7 +2621,7 @@ static void classstat (LexState *ls, int line) {
       /* Method declaration */
       expdesc cv;
       buildglobal(ls, classname, &cv);
-      classmethod(ls, &cv);
+      classmethod(ls, &cv, classname);
     }
     else if (ls->t.token == TK_NAME) {
       TString *word = ls->t.seminfo.ts;
@@ -2585,7 +2686,7 @@ static void classstat (LexState *ls, int line) {
               codestring(&key, propname);
               luaK_indexed(fs, &cv, &key);
               /* cv = ClassName.__getters[propname] */
-              body(ls, &b, 0, ls->linenumber);
+              body_classctx(ls, &b, 0, ls->linenumber, classname);
               luaK_storevar(fs, &cv, &b);
               luaK_fixline(fs, ls->linenumber);
               if (ngetters < MAX_CLASS_FIELDS)
@@ -2601,7 +2702,7 @@ static void classstat (LexState *ls, int line) {
               luaK_exp2anyregup(fs, &cv);
               codestring(&key, propname);
               luaK_indexed(fs, &cv, &key);
-              body(ls, &b, 0, ls->linenumber);
+              body_classctx(ls, &b, 0, ls->linenumber, classname);
               luaK_storevar(fs, &cv, &b);
               luaK_fixline(fs, ls->linenumber);
               if (nsetters < MAX_CLASS_FIELDS)
@@ -2621,11 +2722,18 @@ static void classstat (LexState *ls, int line) {
           luaX_next(ls);  /* skip ':' */
           parse_type(ls);  /* skip type */
         }
-        /* store access info */
+        /* store access info for runtime and compile-time checking */
         if (access != NULL && nfields < MAX_CLASS_FIELDS) {
           field_names[nfields] = fname;
           field_access[nfields] = access;
           nfields++;
+          /* register for compile-time access validation */
+          lu_byte acc_code = 0;
+          if (strcmp(access, "private") == 0) acc_code = ACCESS_PRIVATE;
+          else if (strcmp(access, "protected") == 0) acc_code = ACCESS_PROTECTED;
+          else if (strcmp(access, "readonly") == 0) acc_code = ACCESS_READONLY;
+          if (acc_code > 0)
+            register_classfield(ls, classname, fname, acc_code);
         }
       }
       else if (access != NULL) {
@@ -2633,7 +2741,7 @@ static void classstat (LexState *ls, int line) {
         if (ls->t.token == TK_FUNCTION) {
           expdesc cv;
           buildglobal(ls, classname, &cv);
-          classmethod(ls, &cv);
+          classmethod(ls, &cv, classname);
         }
         else {
           luaX_syntaxerror(ls, "field name or 'function' expected after modifier");
@@ -2866,9 +2974,11 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
-  /* free class name registry */
+  /* free class name registry and field access info */
   if (lexstate.classnames != NULL)
     luaM_freearray(L, lexstate.classnames, lexstate.classnames_size);
+  if (lexstate.classfields != NULL)
+    luaM_freearray(L, lexstate.classfields, lexstate.classfields_size);
   L->top.p--;  /* remove scanner's table */
   return cl;  /* closure is on the stack, too */
 }

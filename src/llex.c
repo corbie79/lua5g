@@ -198,6 +198,9 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->classnames = NULL;
   ls->nclasses = 0;
   ls->classnames_size = 0;
+  ls->classfields = NULL;
+  ls->nclassfields = 0;
+  ls->classfields_size = 0;
   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
 }
 

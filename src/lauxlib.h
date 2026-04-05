@@ -324,6 +324,15 @@ LUALIB_API void (luaL_checkinstance) (lua_State *L, int arg,
 */
 LUALIB_API void (luaL_setupclass) (lua_State *L);
 
+/*
+** luaL_setclassrelease / luaL_getclassrelease: control release mode.
+** In release mode, private/protected access checks are skipped
+** (readonly + getter/setter still enforced). Zero overhead.
+** Compile with -DLUA_CLASS_RELEASE to default to release mode.
+*/
+LUALIB_API void (luaL_setclassrelease) (lua_State *L, int mode);
+LUALIB_API int  (luaL_getclassrelease) (lua_State *L);
+
 /* }============================================================ */
 
 

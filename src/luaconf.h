@@ -740,6 +740,14 @@
 */
 
 
+/*
+@@ LUA_CLASS_RELEASE: define this to disable private/protected access
+** checks at runtime for maximum performance. Readonly and getter/setter
+** still work. Only the debug-API-based caller verification is skipped.
+** Build with: gcc -DLUA_CLASS_RELEASE ...
+*/
+/* #define LUA_CLASS_RELEASE */
+
 
 #endif
 
