@@ -372,9 +372,10 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
   for (i = pc + 1; i < loop_end_pc; i++) {
     OpCode op = GET_OPCODE(code[i]);
     switch (op) {
-      case OP_MOVE: case OP_LOADI: case OP_LOADK:
-      case OP_ADD: case OP_SUB: case OP_MUL:
+      case OP_MOVE: case OP_LOADI: case OP_LOADK: case OP_LOADF:
+      case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
       case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
+      case OP_DIVK: case OP_IDIVK:
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
@@ -755,13 +756,15 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       OpCode op = GET_OPCODE(inst);
       int a = GETARG_A(inst);
       switch (op) {
-        case OP_ADD: case OP_SUB: case OP_MUL: {
+        case OP_ADD: case OP_SUB: case OP_MUL:
+        case OP_DIV: case OP_IDIV: {
           int b2 = GETARG_B(inst);
           int c2 = GETARG_C(inst);
           unsigned char opc;
           if (op == OP_ADD) opc = 0x58;
           else if (op == OP_SUB) opc = 0x5C;
-          else opc = 0x59;
+          else if (op == OP_MUL) opc = 0x59;
+          else opc = 0x5E;  /* DIV/IDIV → divsd */
           /* Fast path: accumulator op loop_var → pure register */
           if (fpinned >= 0 && a == fpinned && b2 == fpinned
               && c2 == ra_for + 2) {
