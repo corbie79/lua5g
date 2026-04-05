@@ -513,6 +513,18 @@ static int luaB_tostring (lua_State *L) {
 }
 
 
+/*
+** __setup_class(classTable) - set up access control metamethods
+** Called by generated code for classes with access modifiers/properties.
+*/
+static int luaB_setupclass (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_settop(L, 1);  /* ensure only class table on stack */
+  luaL_setupclass(L);
+  return 0;
+}
+
+
 static const luaL_Reg base_funcs[] = {
   {"assert", luaB_assert},
   {"collectgarbage", luaB_collectgarbage},
@@ -537,6 +549,7 @@ static const luaL_Reg base_funcs[] = {
   {"tostring", luaB_tostring},
   {"type", luaB_type},
   {"xpcall", luaB_xpcall},
+  {"__setup_class", luaB_setupclass},
   /* placeholders */
   {LUA_GNAME, NULL},
   {"_VERSION", NULL},

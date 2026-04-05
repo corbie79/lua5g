@@ -2441,8 +2441,53 @@ static void classstat (LexState *ls, int line) {
   }
 
   /*
-  ** Parse class body: field declarations and methods
+  ** Parse class body: field declarations, methods, and properties
+  ** with access modifiers (public/private/protected/readonly)
   */
+  /* Track if we need access control setup */
+  int has_access_control = 0;
+
+  /* Pre-create __getters and __setters tables on the class */
+  {
+    expdesc cv, key, tab;
+    int pc;
+    /* ClassName.__getters = {} */
+    buildglobal(ls, classname, &cv);
+    luaK_exp2anyregup(fs, &cv);
+    codestring(&key, luaX_newstring(ls, "__getters", 9));
+    luaK_indexed(fs, &cv, &key);
+    pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+    luaK_code(fs, 0);
+    init_exp(&tab, VNONRELOC, fs->freereg);
+    luaK_reserveregs(fs, 1);
+    luaK_settablesize(fs, pc, tab.u.info, 0, 0);
+    luaK_storevar(fs, &cv, &tab);
+
+    /* ClassName.__setters = {} */
+    buildglobal(ls, classname, &cv);
+    luaK_exp2anyregup(fs, &cv);
+    codestring(&key, luaX_newstring(ls, "__setters", 9));
+    luaK_indexed(fs, &cv, &key);
+    pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+    luaK_code(fs, 0);
+    init_exp(&tab, VNONRELOC, fs->freereg);
+    luaK_reserveregs(fs, 1);
+    luaK_settablesize(fs, pc, tab.u.info, 0, 0);
+    luaK_storevar(fs, &cv, &tab);
+  }
+
+  /* field access info: stored as parallel arrays */
+  #define MAX_CLASS_FIELDS 64
+  TString *field_names[MAX_CLASS_FIELDS];
+  const char *field_access[MAX_CLASS_FIELDS];
+  int nfields = 0;
+
+  /* getter/setter names for properties */
+  TString *getter_names[MAX_CLASS_FIELDS];
+  TString *setter_names[MAX_CLASS_FIELDS];
+  int ngetters = 0;
+  int nsetters = 0;
+
   while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
     if (ls->t.token == TK_FUNCTION) {
       /* Method declaration */
@@ -2451,11 +2496,121 @@ static void classstat (LexState *ls, int line) {
       classmethod(ls, &cv);
     }
     else if (ls->t.token == TK_NAME) {
-      /* Field declaration: name ':' type (parsed and discarded) */
-      luaX_next(ls);  /* skip field name */
-      if (ls->t.token == ':') {
-        luaX_next(ls);  /* skip ':' */
-        parse_type(ls);  /* skip type */
+      TString *word = ls->t.seminfo.ts;
+      const char *ws = getstr(word);
+      /* check for access modifiers */
+      const char *access = NULL;
+      int is_readonly = 0;
+      if (strcmp(ws, "public") == 0 || strcmp(ws, "private") == 0 ||
+          strcmp(ws, "protected") == 0 || strcmp(ws, "readonly") == 0) {
+        if (strcmp(ws, "readonly") == 0) {
+          access = "readonly";
+          is_readonly = 1;
+        }
+        else
+          access = ws;
+        luaX_next(ls);  /* skip modifier */
+        /* check for 'readonly' after public/private/protected */
+        if (!is_readonly && ls->t.token == TK_NAME) {
+          const char *nxt = getstr(ls->t.seminfo.ts);
+          if (strcmp(nxt, "readonly") == 0) {
+            /* e.g. "private readonly x: number" - use private */
+            luaX_next(ls);  /* skip 'readonly' */
+          }
+        }
+        has_access_control = 1;
+      }
+
+      /* check for 'property' keyword */
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "property") == 0 &&
+          access != NULL) {
+        /* access modifier before property - skip to property handling */
+        /* fall through to property check below */
+      }
+
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "property") == 0) {
+        /* property NAME
+             get(self) ... end
+             set(self, v) ... end
+           end */
+        luaX_next(ls);  /* skip 'property' */
+        TString *propname = str_checkname(ls);
+        optional_type_annotation(ls);  /* optional ': type' */
+        has_access_control = 1;
+
+        /* parse get/set blocks until 'end' */
+        while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+          if (ls->t.token == TK_NAME) {
+            const char *gs = getstr(ls->t.seminfo.ts);
+            if (strcmp(gs, "get") == 0) {
+              /* get(self) block end */
+              expdesc cv, key, b;
+              luaX_next(ls);  /* skip 'get' */
+              /* Store as ClassName.__getters.propname = function ... */
+              buildglobal(ls, classname, &cv);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, luaX_newstring(ls, "__getters", 9));
+              luaK_indexed(fs, &cv, &key);
+              /* Now cv = ClassName.__getters */
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, propname);
+              luaK_indexed(fs, &cv, &key);
+              /* cv = ClassName.__getters[propname] */
+              body(ls, &b, 0, ls->linenumber);
+              luaK_storevar(fs, &cv, &b);
+              luaK_fixline(fs, ls->linenumber);
+              if (ngetters < MAX_CLASS_FIELDS)
+                getter_names[ngetters++] = propname;
+            }
+            else if (strcmp(gs, "set") == 0) {
+              expdesc cv, key, b;
+              luaX_next(ls);  /* skip 'set' */
+              buildglobal(ls, classname, &cv);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, luaX_newstring(ls, "__setters", 9));
+              luaK_indexed(fs, &cv, &key);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, propname);
+              luaK_indexed(fs, &cv, &key);
+              body(ls, &b, 0, ls->linenumber);
+              luaK_storevar(fs, &cv, &b);
+              luaK_fixline(fs, ls->linenumber);
+              if (nsetters < MAX_CLASS_FIELDS)
+                setter_names[nsetters++] = propname;
+            }
+            else break;
+          }
+          else break;
+        }
+        checknext(ls, TK_END);  /* property ... end */
+      }
+      else if (ls->t.token == TK_NAME) {
+        /* Field declaration: [modifier] NAME ':' type */
+        TString *fname = ls->t.seminfo.ts;
+        luaX_next(ls);  /* skip field name */
+        if (ls->t.token == ':') {
+          luaX_next(ls);  /* skip ':' */
+          parse_type(ls);  /* skip type */
+        }
+        /* store access info */
+        if (access != NULL && nfields < MAX_CLASS_FIELDS) {
+          field_names[nfields] = fname;
+          field_access[nfields] = access;
+          nfields++;
+        }
+      }
+      else if (access != NULL) {
+        /* modifier without field name - might be followed by function */
+        if (ls->t.token == TK_FUNCTION) {
+          expdesc cv;
+          buildglobal(ls, classname, &cv);
+          classmethod(ls, &cv);
+        }
+        else {
+          luaX_syntaxerror(ls, "field name or 'function' expected after modifier");
+        }
       }
       else {
         luaX_syntaxerror(ls, "':' expected after field name in class body");
@@ -2465,7 +2620,64 @@ static void classstat (LexState *ls, int line) {
       luaX_next(ls);  /* skip optional semicolons */
     }
     else {
-      luaX_syntaxerror(ls, "'function', field declaration, or 'end' expected");
+      luaX_syntaxerror(ls,
+        "'function', field declaration, modifier, or 'end' expected");
+    }
+  }
+
+  /*
+  ** Generate access control metadata and call __setup_class
+  */
+  if (has_access_control) {
+    int i;
+
+    /* Create ClassName.__access = {field1 = "access", ...} */
+    if (nfields > 0) {
+      expdesc cv, key;
+      int pc;
+      expdesc tab;
+
+      /* ClassName.__access = {} */
+      buildglobal(ls, classname, &cv);
+      luaK_exp2anyregup(fs, &cv);
+      codestring(&key, luaX_newstring(ls, "__access", 8));
+      luaK_indexed(fs, &cv, &key);
+
+      pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+      luaK_code(fs, 0);
+      init_exp(&tab, VNONRELOC, fs->freereg);
+      luaK_reserveregs(fs, 1);
+      luaK_settablesize(fs, pc, tab.u.info, 0, nfields);
+
+      /* set fields in __access table */
+      for (i = 0; i < nfields; i++) {
+        expdesc t2 = tab, fk, fv;
+        luaK_exp2anyregup(fs, &t2);
+        codestring(&fk, field_names[i]);
+        luaK_indexed(fs, &t2, &fk);
+        codestring(&fv, luaX_newstring(ls, field_access[i],
+                                       strlen(field_access[i])));
+        luaK_storevar(fs, &t2, &fv);
+      }
+
+      luaK_storevar(fs, &cv, &tab);
+      luaK_fixline(fs, line);
+    }
+
+    /* __getters and __setters are pre-created before body parsing */
+
+    /* Call __setup_class(ClassName) */
+    {
+      expdesc setupfn, arg;
+      int base;
+      buildglobal(ls, luaX_newstring(ls, "__setup_class", 13), &setupfn);
+      luaK_exp2nextreg(fs, &setupfn);
+      base = fs->freereg - 1;
+      buildglobal(ls, classname, &arg);
+      luaK_exp2nextreg(fs, &arg);
+      init_exp(&setupfn, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 1));
+      luaK_fixline(fs, line);
+      fs->freereg = cast_byte(base);
     }
   }
 

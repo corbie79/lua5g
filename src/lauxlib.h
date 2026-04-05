@@ -312,6 +312,18 @@ LUALIB_API int (luaL_isinstance) (lua_State *L, int idx,
 LUALIB_API void (luaL_checkinstance) (lua_State *L, int arg,
                                       const char *classname);
 
+/*
+** luaL_setupclass: Set up access control on a class table.
+** The class table (at top of stack) should have:
+**   __access  = {fieldname = "public"|"private"|"protected"|"readonly", ...}
+**   __getters = {propname = function(self) ... end, ...}
+**   __setters = {propname = function(self, val) ... end, ...}
+** This function creates __index and __newindex closure metamethods
+** that enforce the access rules, dispatch getters/setters, and
+** handle method lookup + inheritance.
+*/
+LUALIB_API void (luaL_setupclass) (lua_State *L);
+
 /* }============================================================ */
 
 
