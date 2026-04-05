@@ -3699,6 +3699,9 @@ static void statement (LexState *ls) {
       /* import "module" → local module = require("module")
          import NAME from "module" → local NAME = require("module") */
       if (ls->t.seminfo.ts == ls->importn) {
+        int ilk = luaX_lookahead(ls);
+        if (ilk != TK_STRING && ilk != TK_NAME)
+          goto not_import;  /* not an import statement */
         FuncState *fs = ls->fs;
         luaX_next(ls);  /* skip 'import' */
         if (ls->t.token == TK_STRING) {
@@ -3755,6 +3758,7 @@ static void statement (LexState *ls) {
         }
         break;
       }
+      not_import:
 #if defined(LUA_COMPAT_GLOBAL)
       /* compatibility code to parse global keyword when "global"
          is not reserved */

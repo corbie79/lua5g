@@ -51,6 +51,49 @@ static void jit_free_code (void *p, size_t size) { (void)p; (void)size; }
 
 
 /* ============================================================ */
+/* JIT C helpers - called from JIT-compiled native code          */
+/* These use a simple ABI: args passed via global pointers.      */
+/* ============================================================ */
+
+#include "ltable.h"
+#include "lstring.h"
+
+/*
+** JIT helper: GETFIELD R[A] = R[B][K[C]:shortstring]
+** Called from JIT code with: base pointer, A, B, C, k array
+** Uses x86-64 SysV ABI: rdi=base, rsi=A, rdx=B, rcx=C, r8=k_array
+*/
+void luaJ_helper_getfield (StackValue *base, int a, int b, int c,
+                            TValue *k) {
+  TValue *rb = s2v(base + b);
+  if (ttistable(rb)) {
+    TString *key = tsvalue(&k[c]);
+    TValue result;
+    lu_byte tag = luaH_getshortstr(hvalue(rb), key, &result);
+    if (!tagisempty(tag)) {
+      TValue *dest = s2v(base + a);
+      dest->value_ = result.value_;
+      settt_(dest, result.tt_);
+    }
+    else
+      setnilvalue(s2v(base + a));
+  }
+}
+
+/*
+** JIT helper: GETI R[A] = R[B][C]
+*/
+void luaJ_helper_geti (StackValue *base, int a, int b, int c) {
+  TValue *rb = s2v(base + b);
+  if (ttistable(rb)) {
+    lu_byte tag = luaH_getint(hvalue(rb), c, s2v(base + a));
+    if (tagisempty(tag))
+      setnilvalue(s2v(base + a));
+  }
+}
+
+
+/* ============================================================ */
 /* JIT init/close                                                */
 /* ============================================================ */
 
@@ -134,18 +177,20 @@ void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
 
 
 /*
-** Prologue: save callee-saved registers, set up rdi = stack base
-** C calling convention: rdi = 1st arg (stack base pointer)
-** typedef int (*JitFunc)(StackValue *base);
+** Prologue: save callee-saved registers
+** C calling convention: rdi = base (1st arg), rsi = k array (2nd arg)
+** typedef int (*JitFunc)(StackValue *base, TValue *k);
+** We save rsi to r12 (callee-saved) for use in GETFIELD/CALL helpers.
 */
 void jit_emit_prologue(JitEmitter *e) {
-  /* push rbx; push r12; push r13; push r14; push r15 */
   emit1(e, 0x53);                          /* push rbx */
   emit2(e, 0x41, 0x54);                    /* push r12 */
   emit2(e, 0x41, 0x55);                    /* push r13 */
   emit2(e, 0x41, 0x56);                    /* push r14 */
   emit2(e, 0x41, 0x57);                    /* push r15 */
-  /* rdi already has base pointer from C call */
+  /* save k pointer: mov r12, rsi */
+  { unsigned char b[] = {0x49, 0x89, 0xF4}; emit_bytes(e, b, 3); }
+  /* rdi = base, r12 = k */
 }
 
 
@@ -376,6 +421,8 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
       case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
       case OP_DIVK: case OP_IDIVK:
+      case OP_GETFIELD:
+      case OP_GETI:
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
@@ -637,11 +684,61 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         }
         break;
       }
+      case OP_GETFIELD: {
+        /* R[A] = R[B][K[C]:shortstring]
+           Call: luaJ_helper_getfield(base=rdi, a=rsi, b=rdx, c=rcx, k=r8) */
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        /* save rdi (base) - push */
+        emit1(&em, 0x57);  /* push rdi */
+        /* set up args: rsi=a, rdx=b, rcx=c, r8=r12(k) */
+        { unsigned char bb[] = {0x48, 0xC7, 0xC6}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)a); }  /* mov rsi, a */
+        { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)b); }  /* mov rdx, b */
+        { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)c); }  /* mov rcx, c */
+        { unsigned char bb[] = {0x4D, 0x89, 0xE0}; emit_bytes(&em, bb, 3); }
+          /* mov r8, r12 (k array) */
+        /* mov rax, helper_addr; call rax */
+        emit2(&em, 0x48, 0xB8);
+        emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_getfield);
+        emit2(&em, 0xFF, 0xD0);  /* call rax */
+        /* restore rdi */
+        emit1(&em, 0x5F);  /* pop rdi */
+        break;
+      }
+      /* SETFIELD needs lua_State for GC - falls back to interpreter */
+      case OP_GETI: {
+        int b = GETARG_B(inst);
+        int c = GETARG_C(inst);
+        emit1(&em, 0x57);
+        { unsigned char bb[] = {0x48, 0xC7, 0xC6}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)a); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC2}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)b); }
+        { unsigned char bb[] = {0x48, 0xC7, 0xC1}; emit_bytes(&em, bb, 3);
+          emit_u32(&em, (unsigned int)c); }
+        emit2(&em, 0x48, 0xB8);
+        emit_u64(&em, (unsigned long long)(uintptr_t)luaJ_helper_geti);
+        emit2(&em, 0xFF, 0xD0);
+        emit1(&em, 0x5F);
+        break;
+      }
+      /* SETI/GETTABUP/CALL need full VM state - fall back */
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
-        break;  /* skip metamethod markers */
+        break;
       default:
         break;
     }
+  }
+
+  /* Flush pinned accumulators to stack before for-loop update
+     (GETFIELD/SETFIELD reads from stack) */
+  if (npinned >= 1) {
+    emit2(&em, 0x4C, 0x89);
+    emit1(&em, 0xB7);
+    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
   }
 
   /* === For-loop update === */
