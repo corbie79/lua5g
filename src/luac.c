@@ -104,6 +104,8 @@ static int doargs(int argc, char* argv[])
    dumping=0;
   else if (IS("-s"))			/* strip debug information */
    stripping=1;
+  else if (IS("-t"))			/* strip type info only */
+   stripping=2;
   else if (IS("-v"))			/* show version */
    ++version;
   else					/* unknown option */
