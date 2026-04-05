@@ -23,6 +23,7 @@
 /* mathx: extended math with batch processing */
 LUAMOD_API int luaopen_mathx (lua_State *L);
 LUAMOD_API int luaopen_ldb (lua_State *L);
+LUAMOD_API int luaopen_trace (lua_State *L);
 
 
 /*
@@ -42,6 +43,7 @@ static const luaL_Reg stdlibs[] = {
   {LUA_UTF8LIBNAME, luaopen_utf8},
   {"mathx", luaopen_mathx},
   {"ldb", luaopen_ldb},
+  {"trace", luaopen_trace},
   {NULL, NULL}
 };
 
