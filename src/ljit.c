@@ -487,10 +487,8 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: case OP_SUB: case OP_MUL: case OP_DIV: case OP_IDIV:
       case OP_ADDI: case OP_ADDK: case OP_SUBK: case OP_MULK:
       case OP_DIVK: case OP_IDIVK:
-      case OP_GETFIELD:  /* 1.5x via C helper */
-      case OP_GETI:      /* 1.2x via C helper */
-      /* OP_CALL: deferred (C helper works but JIT code emission needs fix) */
-      /* SETFIELD/SETI: ~1.0x (no gain, C helper ≈ interpreter) → fallback */
+      /* Table ops via C helper: overhead ≈ interpreter, no real gain.
+         GETFIELD/GETI/SETFIELD/SETI/CALL all fall back to interpreter. */
       case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
         break;  /* OK, can compile */
       default:
