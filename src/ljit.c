@@ -809,6 +809,111 @@ void jit_emit_float_forloop_store(JitEmitter *e, int ra) {
   arm_emit32(e, arm_vstr(ARM_AL, 0, 11, (ra+2)*(int)SLOT_SIZE));
 }
 
+#elif defined(JIT_ARCH_X86)
+/* x86 32-bit backend: see full implementation above */
+/* For brevity, x86-32 reuses same SSE2 float encoding as x86-64 */
+/* Int: no REX prefix, base in edi from [ebp+8] */
+
+static void emit_bytes(JitEmitter *e, const unsigned char *b, int n) {
+  if (e->pos+(size_t)n<=e->capacity){memcpy(e->code+e->pos,b,(size_t)n);e->pos+=(size_t)n;}
+}
+static void emit1(JitEmitter *e, unsigned char b){if(e->pos<e->capacity)e->code[e->pos++]=b;}
+static void emit2(JitEmitter *e, unsigned char a, unsigned char b){emit1(e,a);emit1(e,b);}
+static void emit_u32(JitEmitter *e, unsigned int v){
+  emit1(e,(unsigned char)(v&0xFF));emit1(e,(unsigned char)((v>>8)&0xFF));
+  emit1(e,(unsigned char)((v>>16)&0xFF));emit1(e,(unsigned char)((v>>24)&0xFF));
+}
+void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap){e->code=buf;e->pos=0;e->capacity=cap;}
+void jit_emit_prologue(JitEmitter *e){
+  emit1(e,0x55);emit2(e,0x89,0xE5);emit1(e,0x53);emit1(e,0x56);emit1(e,0x57);
+  emit2(e,0x8B,0x7D);emit1(e,0x08);
+}
+void jit_emit_epilogue(JitEmitter *e){
+  emit2(e,0x31,0xC0);emit1(e,0x5F);emit1(e,0x5E);emit1(e,0x5B);emit1(e,0x5D);emit1(e,0xC3);
+}
+void jit_emit_load_slot(JitEmitter *e, int r, int s){
+  int off=s*(int)SLOT_SIZE; emit1(e,0x8B);emit1(e,(unsigned char)(0x87|(r<<3)));emit_u32(e,(unsigned int)off);
+}
+void jit_emit_store_slot(JitEmitter *e, int s, int r){
+  int off=s*(int)SLOT_SIZE; emit1(e,0x89);emit1(e,(unsigned char)(0x87|(r<<3)));emit_u32(e,(unsigned int)off);
+}
+void jit_emit_addi(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;emit2(e,0x01,0xC8);}
+void jit_emit_subi(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;emit2(e,0x29,0xC8);}
+void jit_emit_muli(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;
+  unsigned char b2[]={0x0F,0xAF,0xC1};emit_bytes(e,b2,3);}
+void jit_emit_loadi(JitEmitter *e,int a,lua_Integer v){(void)a;emit1(e,0xB8);emit_u32(e,(unsigned int)(int)v);}
+void jit_emit_addimm(JitEmitter *e,int a,int b,int i){(void)a;(void)b;emit1(e,0x05);emit_u32(e,(unsigned int)i);}
+void jit_emit_cmp_jle(JitEmitter *e,int a,int b,int*p){(void)a;(void)b;emit2(e,0x39,0xC8);emit2(e,0x0F,0x8E);*p=(int)e->pos;emit_u32(e,0);}
+void jit_emit_patch_jump(JitEmitter *e,int pp){
+  int t=(int)e->pos,r=t-(pp+4);
+  e->code[pp]=(unsigned char)(r&0xFF);e->code[pp+1]=(unsigned char)((r>>8)&0xFF);
+  e->code[pp+2]=(unsigned char)((r>>16)&0xFF);e->code[pp+3]=(unsigned char)((r>>24)&0xFF);
+}
+void jit_emit_addf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;unsigned char buf[]={0xF2,0x0F,0x58,0xC1};emit_bytes(e,buf,4);}
+void jit_emit_subf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;unsigned char buf[]={0xF2,0x0F,0x5C,0xC1};emit_bytes(e,buf,4);}
+void jit_emit_mulf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;unsigned char buf[]={0xF2,0x0F,0x59,0xC1};emit_bytes(e,buf,4);}
+void jit_emit_divf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;unsigned char buf[]={0xF2,0x0F,0x5E,0xC1};emit_bytes(e,buf,4);}
+int jit_emit_forloop(JitEmitter *e,int a,int t){(void)a;emit1(e,0xE9);int r=t-((int)e->pos+4);emit_u32(e,(unsigned int)r);return(int)e->pos;}
+/* pinned: edx */
+void jit_emit_pin_load(JitEmitter *e,int p,int r){(void)p;jit_emit_load_slot(e,2,r);}
+void jit_emit_pin_store(JitEmitter *e,int p,int r){(void)p;jit_emit_store_slot(e,r,2);}
+void jit_emit_pin_add_reg(JitEmitter *e,int p,int c){(void)p;(void)c;emit2(e,0x01,0xCA);}
+void jit_emit_pin_addimm(JitEmitter *e,int p,int i){(void)p;emit2(e,0x81,0xC2);emit_u32(e,(unsigned int)i);}
+void jit_emit_pin_to_scratch(JitEmitter *e,int p){(void)p;emit2(e,0x89,0xD0);}
+void jit_emit_scratch_to_pin(JitEmitter *e,int p){(void)p;emit2(e,0x89,0xC2);}
+void jit_emit_loopvar_to_scratch(JitEmitter *e,int c){(void)e;(void)c;} /* ecx already scratch reg 1 */
+/* forloop: ebx=count, esi(loaded manually)=step, ecx=idx */
+void jit_emit_forloop_load(JitEmitter *e,int ra){
+  jit_emit_load_slot(e,3,ra);
+  {int off=(ra+1)*(int)SLOT_SIZE;emit1(e,0x8B);emit1(e,0xB7);emit_u32(e,(unsigned int)off);}
+  jit_emit_load_slot(e,1,ra+2);
+}
+int jit_emit_forloop_skipcheck(JitEmitter *e){
+  emit2(e,0x85,0xDB);emit2(e,0x0F,0x88);int p=(int)e->pos;emit_u32(e,0);return p;
+}
+void jit_emit_forloop_update(JitEmitter *e,int ra,int lt){
+  emit1(e,0x4B);emit2(e,0x01,0xF1);jit_emit_store_slot(e,ra+2,1);
+  emit2(e,0x85,0xDB);int r=lt-((int)e->pos+6);emit2(e,0x0F,0x89);emit_u32(e,(unsigned int)r);
+}
+void jit_emit_forloop_store(JitEmitter *e,int ra){jit_emit_store_slot(e,ra,3);jit_emit_store_slot(e,ra+2,1);}
+/* float: SSE2 same as x86-64 but base in edi not rdi (same modrm) */
+void jit_emit_float_forloop_load(JitEmitter *e,int ra){int s=(int)SLOT_SIZE;
+  {unsigned char b[]={0xF2,0x0F,0x10,0x97};emit_bytes(e,b,4);emit_u32(e,(unsigned int)(ra*s));}
+  {unsigned char b[]={0xF2,0x0F,0x10,0x8F};emit_bytes(e,b,4);emit_u32(e,(unsigned int)((ra+1)*s));}
+  {unsigned char b[]={0xF2,0x0F,0x10,0x87};emit_bytes(e,b,4);emit_u32(e,(unsigned int)((ra+2)*s));}
+}
+void jit_emit_fpin_load(JitEmitter *e,int r){unsigned char b[]={0xF2,0x0F,0x10,0xAF};emit_bytes(e,b,4);emit_u32(e,(unsigned int)(r*(int)SLOT_SIZE));}
+void jit_emit_fpin_store(JitEmitter *e,int r){unsigned char b[]={0xF2,0x0F,0x11,0xAF};emit_bytes(e,b,4);emit_u32(e,(unsigned int)(r*(int)SLOT_SIZE));}
+void jit_emit_fpin_op_loopvar(JitEmitter *e,int op){
+  unsigned char opc=(op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  unsigned char b[]={0xF2,0x0F,opc,0xE8};emit_bytes(e,b,4);
+}
+void jit_emit_float_arith(JitEmitter *e,int a,int b,int c,int op){
+  unsigned char opc=(op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  {unsigned char bb[]={0xF2,0x0F,0x10,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(b*(int)SLOT_SIZE));}
+  {unsigned char bb[]={0xF2,0x0F,opc,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(c*(int)SLOT_SIZE));}
+  {unsigned char bb[]={0xF2,0x0F,0x11,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(a*(int)SLOT_SIZE));}
+}
+void jit_emit_float_arith_to_fpin(JitEmitter *e,int b,int c,int op){
+  unsigned char opc=(op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  {unsigned char bb[]={0xF2,0x0F,0x10,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(b*(int)SLOT_SIZE));}
+  {unsigned char bb[]={0xF2,0x0F,opc,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(c*(int)SLOT_SIZE));}
+  {unsigned char bb[]={0xF2,0x0F,0x10,0xEB};emit_bytes(e,bb,4);}
+}
+void jit_emit_float_move(JitEmitter *e,int a,int b){
+  {unsigned char bb[]={0xF2,0x0F,0x10,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(b*(int)SLOT_SIZE));}
+  {unsigned char bb[]={0xF2,0x0F,0x11,0x9F};emit_bytes(e,bb,4);emit_u32(e,(unsigned int)(a*(int)SLOT_SIZE));}
+}
+void jit_emit_float_forloop_update(JitEmitter *e,int ra,int lt){
+  {unsigned char b[]={0xF2,0x0F,0x58,0xC1};emit_bytes(e,b,4);}
+  {unsigned char b[]={0xF2,0x0F,0x11,0x87};emit_bytes(e,b,4);emit_u32(e,(unsigned int)((ra+2)*(int)SLOT_SIZE));}
+  {unsigned char b[]={0x66,0x0F,0x2F,0xC2};emit_bytes(e,b,4);}
+  {int r=lt-((int)e->pos+6);emit2(e,0x0F,0x86);emit_u32(e,(unsigned int)r);}
+}
+void jit_emit_float_forloop_store(JitEmitter *e,int ra){
+  unsigned char b[]={0xF2,0x0F,0x11,0x87};emit_bytes(e,b,4);emit_u32(e,(unsigned int)((ra+2)*(int)SLOT_SIZE));
+}
+
 #else
 /* No JIT support on this platform */
 void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
@@ -867,7 +972,7 @@ void jit_emit_float_move(JitEmitter *e, int a, int b) { (void)e;(void)a;(void)b;
 ** Returns 0 on success.
 */
 int luaJ_compile (lua_State *L, Proto *p, int pc) {
-#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_ARM)
+#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_X86) && !defined(JIT_ARCH_ARM)
   (void)L; (void)p; (void)pc;
   return JIT_FALLBACK;
 #else
@@ -1284,7 +1389,7 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
 ** Returns 0 on success.
 */
 int luaJ_execute (lua_State *L, CallInfo *ci, JitTrace *trace) {
-#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_ARM)
+#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_X86) && !defined(JIT_ARCH_ARM)
   (void)L; (void)ci; (void)trace;
   return -1;
 #else
