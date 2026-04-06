@@ -74,6 +74,9 @@ void luaJ_freetrace (lua_State *L, JitTrace *trace) {
 /* x86-64 code emitter                                           */
 /* ============================================================ */
 
+/* Common: stack slot size (used by all backends and compiler) */
+#define SLOT_SIZE  sizeof(StackValue)
+
 #if defined(JIT_ARCH_X64)
 
 /*
@@ -89,8 +92,6 @@ void luaJ_freetrace (lua_State *L, JitTrace *trace) {
 ** sizeof(TValue) may vary, we use sizeof(StackValue)
 */
 
-/* size of a stack slot (StackValue) */
-#define SLOT_SIZE  sizeof(StackValue)
 /* offset of value_ in TValue */
 #define VAL_OFFSET 0
 /* offset of tt_ in TValue */
@@ -329,7 +330,7 @@ int jit_emit_forloop(JitEmitter *e, int ra, int loop_top) {
 ** ARM instruction encoding: little-endian 32-bit words
 */
 
-#define ARM_SLOT_SIZE  sizeof(StackValue)
+#define SLOT_SIZE  sizeof(StackValue)
 
 /* emit 32-bit ARM instruction (little-endian) */
 static void arm_emit32(JitEmitter *e, unsigned int inst) {
@@ -405,7 +406,7 @@ void jit_emit_epilogue(JitEmitter *e) {
 */
 void jit_emit_load_slot(JitEmitter *e, int cpu_reg, int lua_reg) {
   int rd = (cpu_reg < 4) ? cpu_reg : cpu_reg;  /* map directly */
-  int offset = lua_reg * (int)ARM_SLOT_SIZE;
+  int offset = lua_reg * (int)SLOT_SIZE;
   if (offset < 4096) {
     arm_emit32(e, ARM_LDR(ARM_AL, rd, 11, offset));
   }
@@ -413,7 +414,7 @@ void jit_emit_load_slot(JitEmitter *e, int cpu_reg, int lua_reg) {
 
 void jit_emit_store_slot(JitEmitter *e, int lua_reg, int cpu_reg) {
   int rd = cpu_reg;
-  int offset = lua_reg * (int)ARM_SLOT_SIZE;
+  int offset = lua_reg * (int)SLOT_SIZE;
   if (offset < 4096) {
     /* STR rd, [r11, #offset] */
     arm_emit32(e, ((ARM_AL)<<28) | (0x05<<24) | (1<<23) | (11<<16) | (rd<<12) | (offset & 0xFFF));
