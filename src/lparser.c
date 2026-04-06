@@ -3428,6 +3428,115 @@ static void classstat (LexState *ls, int line) {
 ** matchstat -> MATCH expr { CASE expr THEN block } [CASE '_' THEN block] END
 ** Compiles to equivalent if/elseif/else chain.
 */
+/*
+** trystat -> TRY block [EXCEPT NAME THEN block] [FINALLY block] END
+**
+** Compiles to:
+**   local __ok, __err = pcall(function() <try_body> end)
+**   if not __ok then local err = __err; <except_body> end
+**   <finally_body>
+*/
+static void trystat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  luaX_next(ls);  /* skip 'try' */
+
+  /* Wrap try body in pcall(function() ... end) */
+  /* Create closure for try body */
+  expdesc pcallvar, tryclose, result;
+  int base, nresults;
+
+  /* get pcall from _ENV */
+  buildglobal(ls, luaX_newstring(ls, "pcall", 5), &pcallvar);
+  luaK_exp2nextreg(fs, &pcallvar);
+  base = fs->freereg - 1;
+
+  /* create function() <try_body> end as argument */
+  {
+    expdesc b;
+    FuncState new_fs;
+    BlockCnt bl;
+    new_fs.f = addprototype(ls);
+    new_fs.f->linedefined = line;
+    open_func(ls, &new_fs, &bl);
+    new_fs.classctx = NULL;
+    /* parse try body until 'except', 'finally', or 'end' */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+      if (ls->t.token == TK_NAME) {
+        const char *kw = getstr(ls->t.seminfo.ts);
+        if (strcmp(kw, "except") == 0 || strcmp(kw, "finally") == 0)
+          break;
+      }
+      statement(ls);
+    }
+    new_fs.f->lastlinedefined = ls->linenumber;
+    codeclosure(ls, &b);
+    close_func(ls);
+    luaK_exp2nextreg(fs, &b);
+  }
+
+  /* call pcall(try_func): 1 arg, 2 results (ok, err) */
+  init_exp(&result, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 3));
+  luaK_fixline(fs, line);
+  fs->freereg = cast_byte(base + 2);  /* ok in base, err in base+1 */
+
+  /* create locals __ok, __err for the results */
+  int okreg = base;
+  int errreg = base + 1;
+  TString *okname = luaX_newstring(ls, "(try_ok)", 8);
+  TString *errname = luaX_newstring(ls, "(try_err)", 9);
+  new_localvar(ls, okname);
+  new_localvar(ls, errname);
+  adjustlocalvars(ls, 2);
+
+  /* parse 'except errvar then' block */
+  if (ls->t.token == TK_NAME &&
+      strcmp(getstr(ls->t.seminfo.ts), "except") == 0) {
+    luaX_next(ls);  /* skip 'except' */
+
+    /* except NAME then ... */
+    TString *errvarname = str_checkname(ls);
+    checknext(ls, TK_THEN);
+
+    /* if not __ok then local err = __err; <except_body> end */
+    /* TEST okreg, k=1 → skip JMP if falsy (error); execute JMP if truthy (ok) */
+    luaK_codeABCk(fs, OP_TEST, okreg, 0, 0, 1);
+    int jmp_noerr = luaK_jump(fs);
+
+    /* error branch: create local err = __err */
+    {
+      BlockCnt bl;
+      enterblock(fs, &bl, 0);
+      new_localvar(ls, errvarname);
+      luaK_codeABC(fs, OP_MOVE, fs->freereg, errreg, 0);
+      luaK_reserveregs(fs, 1);
+      adjustlocalvars(ls, 1);
+
+      /* parse except body */
+      while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+        if (ls->t.token == TK_NAME &&
+            strcmp(getstr(ls->t.seminfo.ts), "finally") == 0)
+          break;
+        statement(ls);
+      }
+      leaveblock(fs);
+    }
+
+    luaK_patchtohere(fs, jmp_noerr);
+  }
+
+  /* parse 'finally' block */
+  if (ls->t.token == TK_NAME &&
+      strcmp(getstr(ls->t.seminfo.ts), "finally") == 0) {
+    luaX_next(ls);  /* skip 'finally' */
+    /* finally body: always runs */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS)
+      statement(ls);
+  }
+
+  check_match(ls, TK_END, TK_TRY, line);
+}
+
+
 static void matchstat (LexState *ls, int line) {
   FuncState *fs = ls->fs;
   expdesc subject;
@@ -3598,6 +3707,10 @@ static void statement (LexState *ls) {
     }
     case TK_ENUM: {  /* stat -> enumstat */
       enumstat(ls, line);
+      break;
+    }
+    case TK_TRY: {  /* stat -> trystat */
+      trystat(ls, line);
       break;
     }
     case TK_MATCH: {  /* stat -> matchstat */
