@@ -1854,7 +1854,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           pc += GETARG_Bx(i) + 1;  /* skip the loop */
         else if (cl->p->jit != NULL) {
           /* JIT trace: select int or float path */
-          typedef int (*JitFunc)(void *, void *, void *);
+          typedef int (*JitFunc)(void *);
           JitTrace *trace = cl->p->jit;
           void *jcode = NULL;
           if (ttisinteger(s2v(ra + 1)) && trace->code)
@@ -1862,7 +1862,7 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
           else if (trace->fcode)
             jcode = trace->fcode;
           if (jcode) {
-            ((JitFunc)jcode)(ci->func.p + 1, cl->p->k, L);
+            ((JitFunc)jcode)(ci->func.p + 1);
             pc += GETARG_Bx(i) + 1;
           }
           /* else: no matching path, fall through to interpreter */
@@ -1877,14 +1877,14 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
             int curpc = pcRel(pc, p);  /* pc of this FORPREP */
             int jres = luaJ_compile(L, p, curpc);
             if (jres == JIT_OK && p->jit != NULL) {
-              typedef int (*JitFunc)(void *, void *, void *);
+              typedef int (*JitFunc)(void *);
               void *jcode = NULL;
               if (ttisinteger(s2v(ra + 1)) && p->jit->code)
                 jcode = p->jit->code;
               else if (p->jit->fcode)
                 jcode = p->jit->fcode;
               if (jcode) {
-                ((JitFunc)jcode)(ci->func.p + 1, cl->p->k, L);
+                ((JitFunc)jcode)(ci->func.p + 1);
                 pc += GETARG_Bx(i) + 1;
               }
             }
