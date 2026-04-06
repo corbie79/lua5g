@@ -809,6 +809,228 @@ void jit_emit_float_forloop_store(JitEmitter *e, int ra) {
   arm_emit32(e, arm_vstr(ARM_AL, 0, 11, (ra+2)*(int)SLOT_SIZE));
 }
 
+#elif defined(JIT_ARCH_ARM64)
+
+/* ============================================================ */
+/* AArch64 (ARM64) code emitter                                  */
+/* Fixed 32-bit instructions, 64-bit registers                   */
+/* x0 = base ptr (1st arg), x19-x28 = callee-saved              */
+/* x19=count, x20=step, x21=idx, x22=pinned acc                 */
+/* d0-d31 float: d0=idx, d1=step, d2=limit, d5=fpin             */
+/* ============================================================ */
+
+static void a64_emit32(JitEmitter *e, unsigned int inst) {
+  if (e->pos + 4 <= e->capacity) {
+    e->code[e->pos++]=(unsigned char)(inst&0xFF);
+    e->code[e->pos++]=(unsigned char)((inst>>8)&0xFF);
+    e->code[e->pos++]=(unsigned char)((inst>>16)&0xFF);
+    e->code[e->pos++]=(unsigned char)((inst>>24)&0xFF);
+  }
+}
+
+/* STP/LDP for push/pop pairs */
+#define A64_STP_PRE(rt1,rt2,rn,imm7) \
+  (0xA9800000|((((imm7)/8)&0x7F)<<15)|((rt2)<<10)|((rn)<<5)|(rt1))
+#define A64_LDP_POST(rt1,rt2,rn,imm7) \
+  (0xA8C00000|((((imm7)/8)&0x7F)<<15)|((rt2)<<10)|((rn)<<5)|(rt1))
+
+/* MOV Xd, Xn (ORR Xd, XZR, Xn) */
+#define A64_MOV(rd,rn) (0xAA0003E0|((rn)<<16)|(rd))
+/* ADD Xd, Xn, Xm */
+#define A64_ADD(rd,rn,rm) (0x8B000000|((rm)<<16)|((rn)<<5)|(rd))
+/* SUB Xd, Xn, Xm */
+#define A64_SUB(rd,rn,rm) (0xCB000000|((rm)<<16)|((rn)<<5)|(rd))
+/* SUBS Xd, Xn, #imm12 (sets flags) */
+#define A64_SUBS_IMM(rd,rn,imm) (0xF1000000|((imm)<<10)|((rn)<<5)|(rd))
+/* ADD Xd, Xn, #imm12 */
+#define A64_ADD_IMM(rd,rn,imm) (0x91000000|((imm)<<10)|((rn)<<5)|(rd))
+/* MADD Xd, Xn, Xm, Xa (Xd = Xn*Xm + Xa; Xa=XZR for MUL) */
+#define A64_MUL(rd,rn,rm) (0x9B007C00|((rm)<<16)|((rn)<<5)|(rd))
+/* LDR Xt, [Xn, #imm12*8] (unsigned offset, 64-bit) */
+#define A64_LDR(rt,rn,off) (0xF9400000|(((off)/8)<<10)|((rn)<<5)|(rt))
+/* STR Xt, [Xn, #imm12*8] */
+#define A64_STR(rt,rn,off) (0xF9000000|(((off)/8)<<10)|((rn)<<5)|(rt))
+/* MOVZ Xd, #imm16 */
+#define A64_MOVZ(rd,imm) (0xD2800000|((imm)<<5)|(rd))
+/* CMP Xn, #0 (SUBS XZR, Xn, #0) */
+#define A64_CMP_ZERO(rn) A64_SUBS_IMM(31,rn,0)
+/* B.cond offset (imm19, in instructions) */
+#define A64_BCOND(cond,off19) (0x54000000|((((off19))&0x7FFFF)<<5)|(cond))
+/* B offset (imm26) */
+#define A64_B(off26) (0x14000000|((off26)&0x3FFFFFF))
+/* RET */
+#define A64_RET 0xD65F03C0
+
+/* FP: LDR Dt, [Xn, #imm12*8] */
+#define A64_FLDR(dt,rn,off) (0xFD400000|(((off)/8)<<10)|((rn)<<5)|(dt))
+/* FP: STR Dt, [Xn, #imm12*8] */
+#define A64_FSTR(dt,rn,off) (0xFD000000|(((off)/8)<<10)|((rn)<<5)|(dt))
+/* FADD Dd, Dn, Dm */
+#define A64_FADD(dd,dn,dm) (0x1E602800|((dm)<<16)|((dn)<<5)|(dd))
+/* FSUB Dd, Dn, Dm */
+#define A64_FSUB(dd,dn,dm) (0x1E603800|((dm)<<16)|((dn)<<5)|(dd))
+/* FMUL Dd, Dn, Dm */
+#define A64_FMUL(dd,dn,dm) (0x1E600800|((dm)<<16)|((dn)<<5)|(dd))
+/* FDIV Dd, Dn, Dm */
+#define A64_FDIV(dd,dn,dm) (0x1E601800|((dm)<<16)|((dn)<<5)|(dd))
+/* FCMP Dn, Dm */
+#define A64_FCMP(dn,dm) (0x1E602000|((dm)<<16)|((dn)<<5))
+/* FMOV Dd, Dn */
+#define A64_FMOV(dd,dn) (0x1E604000|((dn)<<5)|(dd))
+
+/* condition codes */
+#define A64_EQ 0
+#define A64_NE 1
+#define A64_LT 11
+#define A64_GE 10
+#define A64_LE 13
+#define A64_MI 4  /* minus/negative */
+#define A64_PL 5  /* plus/positive or zero */
+#define A64_LS 9  /* unsigned <= */
+
+void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
+  e->code=buf; e->pos=0; e->capacity=cap;
+}
+void jit_emit_prologue(JitEmitter *e) {
+  /* STP x29,x30,[sp,#-96]! (save fp,lr + space for x19-x28) */
+  a64_emit32(e, 0xA9BA7BFD); /* stp x29,x30,[sp,#-96]! */
+  a64_emit32(e, 0x910003FD); /* mov x29, sp */
+  /* save callee-saved: x19-x22 */
+  a64_emit32(e, 0xA90153F3); /* stp x19,x20,[sp,#16] */
+  a64_emit32(e, 0xA9025BF5); /* stp x21,x22,[sp,#32] */
+  /* x0 = base pointer, save to x28 (callee-saved) */
+  a64_emit32(e, A64_MOV(28, 0)); /* mov x28, x0 */
+}
+void jit_emit_epilogue(JitEmitter *e) {
+  a64_emit32(e, A64_MOVZ(0, 0)); /* mov x0, #0 */
+  a64_emit32(e, 0xA94153F3); /* ldp x19,x20,[sp,#16] */
+  a64_emit32(e, 0xA9425BF5); /* ldp x21,x22,[sp,#32] */
+  a64_emit32(e, 0xA8C67BFD); /* ldp x29,x30,[sp],#96 */
+  a64_emit32(e, A64_RET);
+}
+/* Load/store from Lua stack: x28 = base */
+void jit_emit_load_slot(JitEmitter *e, int r, int s) {
+  int off=s*(int)SLOT_SIZE;
+  if (off % 8 == 0 && off < 32768)
+    a64_emit32(e, A64_LDR(r, 28, off));
+}
+void jit_emit_store_slot(JitEmitter *e, int s, int r) {
+  int off=s*(int)SLOT_SIZE;
+  if (off % 8 == 0 && off < 32768)
+    a64_emit32(e, A64_STR(r, 28, off));
+}
+void jit_emit_addi(JitEmitter *e,int a,int b,int c) {
+  (void)a;(void)b;(void)c; a64_emit32(e, A64_ADD(0,0,1));
+}
+void jit_emit_subi(JitEmitter *e,int a,int b,int c) {
+  (void)a;(void)b;(void)c; a64_emit32(e, A64_SUB(0,0,1));
+}
+void jit_emit_muli(JitEmitter *e,int a,int b,int c) {
+  (void)a;(void)b;(void)c; a64_emit32(e, A64_MUL(0,0,1));
+}
+void jit_emit_loadi(JitEmitter *e,int a,lua_Integer v) {
+  (void)a; a64_emit32(e, A64_MOVZ(0, (unsigned int)v & 0xFFFF));
+  if ((unsigned long long)v > 0xFFFF)
+    a64_emit32(e, 0xF2A00000|((((unsigned int)(v>>16))&0xFFFF)<<5)|0); /* MOVK x0,#hi,lsl#16 */
+}
+void jit_emit_addimm(JitEmitter *e,int a,int b,int imm) {
+  (void)a;(void)b;
+  if (imm >= 0) a64_emit32(e, A64_ADD_IMM(0,0,imm&0xFFF));
+  else a64_emit32(e, A64_SUBS_IMM(0,0,(-imm)&0xFFF));
+}
+void jit_emit_cmp_jle(JitEmitter *e,int a,int b,int *p) {(void)a;(void)b;(void)e;(void)p;}
+void jit_emit_patch_jump(JitEmitter *e, int pp) {
+  int target=(int)e->pos;
+  int off19=((target-pp)/4);
+  unsigned int orig=e->code[pp]|(e->code[pp+1]<<8)|(e->code[pp+2]<<16)|(e->code[pp+3]<<24);
+  unsigned int cond=orig&0xF;
+  unsigned int inst=A64_BCOND(cond, off19);
+  e->code[pp]=(unsigned char)(inst&0xFF);
+  e->code[pp+1]=(unsigned char)((inst>>8)&0xFF);
+  e->code[pp+2]=(unsigned char)((inst>>16)&0xFF);
+  e->code[pp+3]=(unsigned char)((inst>>24)&0xFF);
+}
+void jit_emit_addf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;a64_emit32(e,A64_FADD(0,0,1));}
+void jit_emit_subf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;a64_emit32(e,A64_FSUB(0,0,1));}
+void jit_emit_mulf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;a64_emit32(e,A64_FMUL(0,0,1));}
+void jit_emit_divf(JitEmitter *e,int a,int b,int c){(void)a;(void)b;(void)c;a64_emit32(e,A64_FDIV(0,0,1));}
+int jit_emit_forloop(JitEmitter *e,int a,int t){(void)a;
+  int off=(t-(int)e->pos)/4; a64_emit32(e, A64_B(off)); return(int)e->pos;
+}
+
+/* Pinned: x22 = accumulator */
+void jit_emit_pin_load(JitEmitter *e,int p,int r){(void)p;jit_emit_load_slot(e,22,r);}
+void jit_emit_pin_store(JitEmitter *e,int p,int r){(void)p;jit_emit_store_slot(e,r,22);}
+void jit_emit_pin_add_reg(JitEmitter *e,int p,int c){(void)p;(void)c;a64_emit32(e,A64_ADD(22,22,21));}
+void jit_emit_pin_addimm(JitEmitter *e,int p,int imm){(void)p;a64_emit32(e,A64_ADD_IMM(22,22,imm&0xFFF));}
+void jit_emit_pin_to_scratch(JitEmitter *e,int p){(void)p;a64_emit32(e,A64_MOV(0,22));}
+void jit_emit_scratch_to_pin(JitEmitter *e,int p){(void)p;a64_emit32(e,A64_MOV(22,0));}
+void jit_emit_loopvar_to_scratch(JitEmitter *e,int c){(void)c;a64_emit32(e,A64_MOV(1,21));}
+
+/* For-loop: x19=count, x20=step, x21=idx, x28=base */
+void jit_emit_forloop_load(JitEmitter *e,int ra){
+  jit_emit_load_slot(e,19,ra);jit_emit_load_slot(e,20,ra+1);jit_emit_load_slot(e,21,ra+2);
+}
+int jit_emit_forloop_skipcheck(JitEmitter *e){
+  a64_emit32(e, A64_CMP_ZERO(19)); /* cmp x19, #0 */
+  int p=(int)e->pos;
+  a64_emit32(e, A64_BCOND(A64_MI, 0)); /* b.mi placeholder */
+  return p;
+}
+void jit_emit_forloop_update(JitEmitter *e,int ra,int lt){
+  a64_emit32(e, A64_SUBS_IMM(19,19,1)); /* subs x19,x19,#1 */
+  a64_emit32(e, A64_ADD(21,21,20));      /* add x21,x21,x20 */
+  jit_emit_store_slot(e,ra+2,21);
+  int off=((lt-(int)e->pos)/4);
+  a64_emit32(e, A64_BCOND(A64_PL, off)); /* b.pl loop_top */
+}
+void jit_emit_forloop_store(JitEmitter *e,int ra){
+  jit_emit_store_slot(e,ra,19);jit_emit_store_slot(e,ra+2,21);
+}
+
+/* Float: d0=idx,d1=step,d2=limit,d5=fpin, x28=base */
+void jit_emit_float_forloop_load(JitEmitter *e,int ra){int s=(int)SLOT_SIZE;
+  a64_emit32(e,A64_FLDR(2,28,ra*s));a64_emit32(e,A64_FLDR(1,28,(ra+1)*s));a64_emit32(e,A64_FLDR(0,28,(ra+2)*s));
+}
+void jit_emit_fpin_load(JitEmitter *e,int r){a64_emit32(e,A64_FLDR(5,28,r*(int)SLOT_SIZE));}
+void jit_emit_fpin_store(JitEmitter *e,int r){a64_emit32(e,A64_FSTR(5,28,r*(int)SLOT_SIZE));}
+void jit_emit_fpin_op_loopvar(JitEmitter *e,int op){
+  if(op==OP_ADD)a64_emit32(e,A64_FADD(5,5,0));
+  else if(op==OP_SUB)a64_emit32(e,A64_FSUB(5,5,0));
+  else if(op==OP_MUL)a64_emit32(e,A64_FMUL(5,5,0));
+  else a64_emit32(e,A64_FDIV(5,5,0));
+}
+void jit_emit_float_arith(JitEmitter *e,int a,int b,int c,int op){int s=(int)SLOT_SIZE;
+  a64_emit32(e,A64_FLDR(3,28,b*s));a64_emit32(e,A64_FLDR(4,28,c*s));
+  if(op==OP_ADD)a64_emit32(e,A64_FADD(3,3,4));
+  else if(op==OP_SUB)a64_emit32(e,A64_FSUB(3,3,4));
+  else if(op==OP_MUL)a64_emit32(e,A64_FMUL(3,3,4));
+  else a64_emit32(e,A64_FDIV(3,3,4));
+  a64_emit32(e,A64_FSTR(3,28,a*s));
+}
+void jit_emit_float_arith_to_fpin(JitEmitter *e,int b,int c,int op){int s=(int)SLOT_SIZE;
+  a64_emit32(e,A64_FLDR(3,28,b*s));a64_emit32(e,A64_FLDR(4,28,c*s));
+  if(op==OP_ADD)a64_emit32(e,A64_FADD(3,3,4));
+  else if(op==OP_SUB)a64_emit32(e,A64_FSUB(3,3,4));
+  else if(op==OP_MUL)a64_emit32(e,A64_FMUL(3,3,4));
+  else a64_emit32(e,A64_FDIV(3,3,4));
+  a64_emit32(e,A64_FMOV(5,3));
+}
+void jit_emit_float_move(JitEmitter *e,int a,int b){int s=(int)SLOT_SIZE;
+  a64_emit32(e,A64_FLDR(3,28,b*s));a64_emit32(e,A64_FSTR(3,28,a*s));
+}
+void jit_emit_float_forloop_update(JitEmitter *e,int ra,int lt){int s=(int)SLOT_SIZE;
+  a64_emit32(e,A64_FADD(0,0,1));
+  a64_emit32(e,A64_FSTR(0,28,(ra+2)*s));
+  a64_emit32(e,A64_FCMP(0,2));
+  int off=((lt-(int)e->pos)/4);
+  a64_emit32(e,A64_BCOND(A64_LS, off)); /* b.ls = unsigned <= (for float: LE after FCMP) */
+}
+void jit_emit_float_forloop_store(JitEmitter *e,int ra){
+  a64_emit32(e,A64_FSTR(0,28,(ra+2)*(int)SLOT_SIZE));
+}
+
+
 #elif defined(JIT_ARCH_X86)
 /* x86 32-bit backend: see full implementation above */
 /* For brevity, x86-32 reuses same SSE2 float encoding as x86-64 */
@@ -1371,6 +1593,11 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
   trace->code_size = em.pos;
   trace->fcode = fbuf;
   trace->fcode_size = fcode_size;
+  /* Flush instruction cache (required for ARM/ARM64) */
+#if defined(JIT_ARCH_ARM) || defined(JIT_ARCH_ARM64)
+  if (buf) __builtin___clear_cache((char*)buf, (char*)buf + em.pos);
+  if (fbuf) __builtin___clear_cache((char*)fbuf, (char*)fbuf + fcode_size);
+#endif
   trace->startpc = pc;
   trace->endpc = loop_end_pc;
 

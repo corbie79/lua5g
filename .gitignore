@@ -5,3 +5,4 @@ src/luac
 luac.out
 lua_arm
 lua_x86
+lua_arm64
