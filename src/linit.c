@@ -24,6 +24,8 @@
 LUAMOD_API int luaopen_mathx (lua_State *L);
 LUAMOD_API int luaopen_ldb (lua_State *L);
 LUAMOD_API int luaopen_trace (lua_State *L);
+LUAMOD_API int luaopen_profile (lua_State *L);
+LUAMOD_API int luaopen_test (lua_State *L);
 
 
 /*
@@ -44,6 +46,8 @@ static const luaL_Reg stdlibs[] = {
   {"mathx", luaopen_mathx},
   {"ldb", luaopen_ldb},
   {"trace", luaopen_trace},
+  {"profile", luaopen_profile},
+  {"test", luaopen_test},
   {NULL, NULL}
 };
 
