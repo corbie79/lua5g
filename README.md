@@ -1,10 +1,23 @@
-<p align="center"><img src="assets/dala-icon.svg" width="200" alt="Dala"></p>
+<p align="center">
+  <img src="assets/dala-icon.svg" width="320" alt="Dala">
+</p>
 
-# Dala
+<h1 align="center">Dala</h1>
 
-> **Lua 5.5 fork with type system, classes, JIT compiler, and modern language features.**
+<p align="center">
+  <strong>달아 달아 둥근달아</strong><br>
+  <em>A modern Lua — types, classes, JIT, and more.</em>
+</p>
 
-Dala extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full class system with inheritance and access control, a lightweight JIT compiler, and modern syntax — while maintaining full backward compatibility with standard Lua.
+<p align="center">
+  <img src="https://img.shields.io/badge/base-Lua%205.5-blue" alt="Lua 5.5">
+  <img src="https://img.shields.io/badge/JIT-x64%20%7C%20x86%20%7C%20ARMv7-green" alt="JIT">
+  <img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT">
+</p>
+
+---
+
+> Dala extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full class system with inheritance and access control, a lightweight JIT compiler, and modern syntax — while maintaining full backward compatibility with standard Lua.
 
 ---
 
