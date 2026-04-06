@@ -1,0 +1,26 @@
+{
+  "name": "lua5g",
+  "displayName": "Lua5g Language Support",
+  "description": "Syntax highlighting, snippets, and language support for Lua5g",
+  "version": "0.1.0",
+  "publisher": "lua5g",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "lua5g",
+      "aliases": ["Lua5g", "lua5g"],
+      "extensions": [".lua", ".lua5g", ".d.lua"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "lua5g",
+      "scopeName": "source.lua5g",
+      "path": "./syntaxes/lua5g.tmLanguage.json"
+    }],
+    "snippets": [{
+      "language": "lua5g",
+      "path": "./snippets/lua5g.json"
+    }]
+  }
+}

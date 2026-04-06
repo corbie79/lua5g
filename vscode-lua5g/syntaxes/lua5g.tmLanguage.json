@@ -1,0 +1,205 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Lua5g",
+  "scopeName": "source.lua5g",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#lua5g-keywords" },
+    { "include": "#types" },
+    { "include": "#access-modifiers" },
+    { "include": "#operators" },
+    { "include": "#functions" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.block.lua5g",
+          "begin": "--\\[\\[",
+          "end": "\\]\\]"
+        },
+        {
+          "name": "comment.line.lua5g",
+          "match": "--.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.lua5g",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.lua5g", "match": "\\\\." },
+            {
+              "name": "variable.other.interpolation.lua5g",
+              "match": "\\{[^}]+\\}"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.lua5g",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "name": "constant.character.escape.lua5g", "match": "\\\\." }
+          ]
+        },
+        {
+          "name": "string.quoted.other.lua5g",
+          "begin": "\\[\\[",
+          "end": "\\]\\]"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.lua5g",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.lua5g",
+          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.lua5g",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.lua5g",
+          "match": "\\b(and|break|do|else|elseif|end|for|goto|if|in|not|or|repeat|return|then|until|while)\\b"
+        },
+        {
+          "name": "keyword.control.lua5g",
+          "match": "\\b(try|except|finally|match|case)\\b"
+        },
+        {
+          "name": "keyword.declaration.lua5g",
+          "match": "\\b(local|global|function)\\b"
+        },
+        {
+          "name": "constant.language.lua5g",
+          "match": "\\b(nil|true|false)\\b"
+        },
+        {
+          "name": "variable.language.lua5g",
+          "match": "\\b(self|super)\\b"
+        }
+      ]
+    },
+    "lua5g-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.declaration.class.lua5g",
+          "match": "\\b(class|extends|implements|interface|enum|declare)\\b"
+        },
+        {
+          "name": "keyword.other.lua5g",
+          "match": "\\b(override|abstract|static|operator|property|import|async|await|type)\\b"
+        },
+        {
+          "name": "storage.modifier.lua5g",
+          "match": "\\b(public|private|protected|readonly)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.lua5g",
+          "match": ":\\s*(number|string|boolean|table|function|nil|thread|userdata|any|unknown)\\b"
+        },
+        {
+          "name": "support.type.lua5g",
+          "match": ":\\s*[A-Z]\\w*"
+        },
+        {
+          "name": "entity.name.type.lua5g",
+          "match": "(?<=class\\s)\\w+"
+        },
+        {
+          "name": "entity.name.type.lua5g",
+          "match": "(?<=interface\\s)\\w+"
+        },
+        {
+          "name": "entity.name.type.lua5g",
+          "match": "(?<=enum\\s)\\w+"
+        },
+        {
+          "name": "entity.name.type.lua5g",
+          "match": "(?<=extends\\s)\\w+"
+        }
+      ]
+    },
+    "access-modifiers": {
+      "patterns": [
+        {
+          "name": "keyword.other.access.lua5g",
+          "match": "\\b(get|set)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.lua5g",
+          "match": "\\?\\."
+        },
+        {
+          "name": "keyword.operator.lua5g",
+          "match": "\\.\\.|\\.\\.\\.|\\.\\/"
+        },
+        {
+          "name": "keyword.operator.lua5g",
+          "match": "[+\\-*/%^#<>=~]"
+        },
+        {
+          "name": "keyword.operator.lambda.lua5g",
+          "match": "\\|"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.lua5g",
+          "match": "(?<=function\\s)\\w+"
+        },
+        {
+          "name": "support.function.lua5g",
+          "match": "\\b(print|type|tostring|tonumber|pairs|ipairs|next|select|pcall|xpcall|error|assert|require|setmetatable|getmetatable|rawget|rawset|rawlen)\\b"
+        },
+        {
+          "name": "support.function.lua5g",
+          "match": "\\b(math|string|table|io|os|coroutine|debug)\\b(?=\\.)"
+        },
+        {
+          "name": "support.function.lua5g",
+          "match": "\\b(__jit_compile|__jit_status|__setup_class|__class_release|async|await|async_run)\\b"
+        },
+        {
+          "name": "support.function.lua5g",
+          "match": "\\bf(?=\")"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.lua5g",
+          "match": "\\b[a-zA-Z_]\\w*\\b"
+        }
+      ]
+    }
+  }
+}
