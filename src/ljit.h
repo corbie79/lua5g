@@ -108,4 +108,31 @@ LUAI_FUNC void jit_emit_subf(JitEmitter *e, int ra, int rb, int rc);
 LUAI_FUNC void jit_emit_mulf(JitEmitter *e, int ra, int rb, int rc);
 LUAI_FUNC void jit_emit_divf(JitEmitter *e, int ra, int rb, int rc);
 
+/* Pinned register operations (accumulator optimization) */
+/* Load Lua slot into pinned register (r14/r7 depending on arch) */
+LUAI_FUNC void jit_emit_pin_load(JitEmitter *e, int pin_idx, int lua_reg);
+/* Store pinned register back to Lua slot */
+LUAI_FUNC void jit_emit_pin_store(JitEmitter *e, int pin_idx, int lua_reg);
+/* Pinned add: pin[idx] += cpu_reg (loop var) */
+LUAI_FUNC void jit_emit_pin_add_reg(JitEmitter *e, int pin_idx, int cpu_reg);
+/* Pinned add immediate: pin[idx] += imm */
+LUAI_FUNC void jit_emit_pin_addimm(JitEmitter *e, int pin_idx, int imm);
+/* Move pinned to scratch (cpu_reg 0 = rax/r0) */
+LUAI_FUNC void jit_emit_pin_to_scratch(JitEmitter *e, int pin_idx);
+/* Move scratch to pinned */
+LUAI_FUNC void jit_emit_scratch_to_pin(JitEmitter *e, int pin_idx);
+
+/* For-loop control */
+/* Load for-loop vars: count, step, idx from Lua slots */
+LUAI_FUNC void jit_emit_forloop_load(JitEmitter *e, int ra_for);
+/* Emit skip-if-negative check (count < 0 → skip) */
+LUAI_FUNC int jit_emit_forloop_skipcheck(JitEmitter *e);
+/* Emit loop update: count--, idx += step, store idx, test, branch */
+LUAI_FUNC void jit_emit_forloop_update(JitEmitter *e, int ra_for, int loop_top);
+/* Store final for-loop values */
+LUAI_FUNC void jit_emit_forloop_store(JitEmitter *e, int ra_for);
+
+/* Move loop variable (r9/r6) to scratch */
+LUAI_FUNC void jit_emit_loopvar_to_scratch(JitEmitter *e, int cpu_reg);
+
 #endif

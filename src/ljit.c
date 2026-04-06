@@ -303,6 +303,101 @@ int jit_emit_forloop(JitEmitter *e, int ra, int loop_top) {
   return (int)e->pos;
 }
 
+/* === x86-64 pinned register ops (r14 = pin[0], r15 = pin[1]) === */
+
+void jit_emit_pin_load(JitEmitter *e, int pin_idx, int lua_reg) {
+  int offset = lua_reg * (int)SLOT_SIZE;
+  if (pin_idx == 0) {
+    emit2(e, 0x4C, 0x8B); emit1(e, 0xB7);  /* mov r14, [rdi+disp] */
+  } else {
+    emit2(e, 0x4C, 0x8B); emit1(e, 0xBF);  /* mov r15, [rdi+disp] */
+  }
+  emit_u32(e, (unsigned int)offset);
+}
+
+void jit_emit_pin_store(JitEmitter *e, int pin_idx, int lua_reg) {
+  int offset = lua_reg * (int)SLOT_SIZE;
+  if (pin_idx == 0) {
+    emit2(e, 0x4C, 0x89); emit1(e, 0xB7);  /* mov [rdi+disp], r14 */
+  } else {
+    emit2(e, 0x4C, 0x89); emit1(e, 0xBF);
+  }
+  emit_u32(e, (unsigned int)offset);
+}
+
+void jit_emit_pin_add_reg(JitEmitter *e, int pin_idx, int cpu_reg) {
+  (void)cpu_reg;  /* always r9 for loop var */
+  if (pin_idx == 0) {
+    unsigned char b[] = {0x4D, 0x01, 0xCE};  /* add r14, r9 */
+    emit_bytes(e, b, 3);
+  }
+}
+
+void jit_emit_pin_addimm(JitEmitter *e, int pin_idx, int imm) {
+  if (pin_idx == 0) {
+    emit2(e, 0x49, 0x81); emit1(e, 0xC6);  /* add r14, imm32 */
+    emit_u32(e, (unsigned int)imm);
+  }
+}
+
+void jit_emit_pin_to_scratch(JitEmitter *e, int pin_idx) {
+  if (pin_idx == 0) {
+    emit2(e, 0x4C, 0x89); emit1(e, 0xF0);  /* mov rax, r14 */
+  }
+}
+
+void jit_emit_scratch_to_pin(JitEmitter *e, int pin_idx) {
+  if (pin_idx == 0) {
+    emit2(e, 0x49, 0x89); emit1(e, 0xC6);  /* mov r14, rax */
+  }
+}
+
+void jit_emit_loopvar_to_scratch(JitEmitter *e, int cpu_reg) {
+  if (cpu_reg == 1) {  /* r9 → rcx */
+    emit2(e, 0x4C, 0x89); emit1(e, 0xC9);  /* mov rcx, r9 */
+  }
+}
+
+/* === x86-64 for-loop control === */
+
+void jit_emit_forloop_load(JitEmitter *e, int ra_for) {
+  jit_emit_load_slot(e, 3, ra_for);      /* rbx = count */
+  jit_emit_load_slot(e, 4, ra_for + 1);  /* r8 = step */
+  jit_emit_load_slot(e, 5, ra_for + 2);  /* r9 = idx */
+}
+
+int jit_emit_forloop_skipcheck(JitEmitter *e) {
+  unsigned char b[] = {0x48, 0x85, 0xDB};  /* test rbx, rbx */
+  emit_bytes(e, b, 3);
+  emit2(e, 0x0F, 0x88);  /* js rel32 */
+  int patch = (int)e->pos;
+  emit_u32(e, 0);
+  return patch;
+}
+
+void jit_emit_forloop_update(JitEmitter *e, int ra_for, int loop_top) {
+  /* dec rbx */
+  unsigned char dec[] = {0x48, 0xFF, 0xCB};
+  emit_bytes(e, dec, 3);
+  /* add r9, r8 */
+  unsigned char add[] = {0x4D, 0x01, 0xC1};
+  emit_bytes(e, add, 3);
+  /* store idx: R[A+2] = r9 */
+  jit_emit_store_slot(e, ra_for + 2, 5);
+  /* test rbx, rbx; jns loop_top */
+  unsigned char test[] = {0x48, 0x85, 0xDB};
+  emit_bytes(e, test, 3);
+  int rel = loop_top - ((int)e->pos + 6);
+  emit2(e, 0x0F, 0x89);  /* jns rel32 */
+  emit_u32(e, (unsigned int)rel);
+}
+
+void jit_emit_forloop_store(JitEmitter *e, int ra_for) {
+  jit_emit_store_slot(e, ra_for, 3);      /* R[A] = count */
+  jit_emit_store_slot(e, ra_for + 2, 5);  /* R[A+2] = final idx */
+}
+
+
 #elif defined(JIT_ARCH_ARM)
 
 /* ============================================================ */
@@ -509,6 +604,53 @@ int jit_emit_forloop(JitEmitter *e, int a, int t) {
   return (int)e->pos;
 }
 
+/* ARMv7 pinned + forloop ops */
+void jit_emit_pin_load(JitEmitter *e, int pin_idx, int lua_reg) {
+  int rd = (pin_idx == 0) ? 7 : 8;
+  int offset = lua_reg * (int)SLOT_SIZE;
+  if (offset < 4096) arm_emit32(e, ARM_LDR(ARM_AL, rd, 11, offset));
+}
+void jit_emit_pin_store(JitEmitter *e, int pin_idx, int lua_reg) {
+  int rd = (pin_idx == 0) ? 7 : 8;
+  int offset = lua_reg * (int)SLOT_SIZE;
+  if (offset < 4096) arm_emit32(e, ((ARM_AL)<<28)|(0x05<<24)|(1<<23)|(11<<16)|(rd<<12)|(offset&0xFFF));
+}
+void jit_emit_pin_add_reg(JitEmitter *e, int pin_idx, int c) {
+  (void)c; int rd=(pin_idx==0)?7:8;
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, rd, rd, 6));
+}
+void jit_emit_pin_addimm(JitEmitter *e, int pin_idx, int imm) {
+  int rd=(pin_idx==0)?7:8;
+  if (imm>=0 && imm<256) arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, rd, rd, (1<<25)|imm));
+}
+void jit_emit_pin_to_scratch(JitEmitter *e, int p) {
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_MOV, 0, 0, 0, (p==0)?7:8));
+}
+void jit_emit_scratch_to_pin(JitEmitter *e, int p) {
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_MOV, 0, 0, (p==0)?7:8, 0));
+}
+void jit_emit_loopvar_to_scratch(JitEmitter *e, int c) {
+  (void)c; arm_emit32(e, ARM_DP(ARM_AL, ARM_MOV, 0, 0, 1, 6));
+}
+void jit_emit_forloop_load(JitEmitter *e, int ra) {
+  jit_emit_load_slot(e,4,ra); jit_emit_load_slot(e,5,ra+1); jit_emit_load_slot(e,6,ra+2);
+}
+int jit_emit_forloop_skipcheck(JitEmitter *e) {
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_CMP, 1, 4, 0, (1<<25)|0));
+  int p=(int)e->pos; arm_emit32(e, ARM_B(ARM_MI, 0)); return p;
+}
+void jit_emit_forloop_update(JitEmitter *e, int ra, int lt) {
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_SUB, 1, 4, 4, (1<<25)|1));
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, 6, 6, 5));
+  jit_emit_store_slot(e, ra+2, 6);
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_CMP, 1, 4, 0, (1<<25)|0));
+  int rel=((lt-(int)e->pos-8)>>2)&0x00FFFFFF;
+  arm_emit32(e, ARM_B(ARM_PL, rel));
+}
+void jit_emit_forloop_store(JitEmitter *e, int ra) {
+  jit_emit_store_slot(e,ra,4); jit_emit_store_slot(e,ra+2,6);
+}
+
 #else
 /* No JIT support on this platform */
 void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
@@ -530,6 +672,17 @@ void jit_emit_subf(JitEmitter *e, int a, int b, int c) { (void)e;(void)a;(void)b
 void jit_emit_mulf(JitEmitter *e, int a, int b, int c) { (void)e;(void)a;(void)b;(void)c; }
 void jit_emit_divf(JitEmitter *e, int a, int b, int c) { (void)e;(void)a;(void)b;(void)c; }
 int jit_emit_forloop(JitEmitter *e, int a, int t) { (void)e;(void)a;(void)t; return 0; }
+void jit_emit_pin_load(JitEmitter *e, int p, int r) { (void)e;(void)p;(void)r; }
+void jit_emit_pin_store(JitEmitter *e, int p, int r) { (void)e;(void)p;(void)r; }
+void jit_emit_pin_add_reg(JitEmitter *e, int p, int c) { (void)e;(void)p;(void)c; }
+void jit_emit_pin_addimm(JitEmitter *e, int p, int i) { (void)e;(void)p;(void)i; }
+void jit_emit_pin_to_scratch(JitEmitter *e, int p) { (void)e;(void)p; }
+void jit_emit_scratch_to_pin(JitEmitter *e, int p) { (void)e;(void)p; }
+void jit_emit_loopvar_to_scratch(JitEmitter *e, int c) { (void)e;(void)c; }
+void jit_emit_forloop_load(JitEmitter *e, int r) { (void)e;(void)r; }
+int jit_emit_forloop_skipcheck(JitEmitter *e) { (void)e; return 0; }
+void jit_emit_forloop_update(JitEmitter *e, int r, int t) { (void)e;(void)r;(void)t; }
+void jit_emit_forloop_store(JitEmitter *e, int r) { (void)e;(void)r; }
 #endif
 
 
@@ -676,32 +829,17 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
     }
   }
 
-  jit_emit_load_slot(&em, 3, ra_for);      /* rbx = R[A] (count) */
-  jit_emit_load_slot(&em, 4, ra_for + 1);  /* r8 = R[A+1] (step) */
-  jit_emit_load_slot(&em, 5, ra_for + 2);  /* r9 = R[A+2] (control/i) */
+  /* Load for-loop control vars into arch-specific registers */
+  jit_emit_forloop_load(&em, ra_for);
 
-  /* Load pinned accumulators into r14, r15 */
-  /* r14 = cpu_reg index we'll emit manually */
-  if (npinned >= 1) {
-    /* mov r14, [rdi + slot*SLOT_SIZE] */
-    emit2(&em, 0x4C, 0x8B);  /* REX.WR + mov */
-    emit1(&em, 0xB7);        /* mod=10 reg=r14(110) rm=rdi(111) */
-    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
-  }
-  if (npinned >= 2) {
-    emit2(&em, 0x4C, 0x8B);
-    emit1(&em, 0xBF);        /* mod=10 reg=r15(111) rm=rdi(111) */
-    emit_u32(&em, (unsigned int)(pinned_slot[1] * (int)SLOT_SIZE));
-  }
+  /* Load pinned accumulators */
+  if (npinned >= 1)
+    jit_emit_pin_load(&em, 0, pinned_slot[0]);
+  if (npinned >= 2)
+    jit_emit_pin_load(&em, 1, pinned_slot[1]);
 
-  /* === Check: if count < 0, skip loop (forprep sets -1 if skip) === */
-  {
-    unsigned char buf2[] = {0x48, 0x85, 0xDB};  /* test rbx, rbx */
-    emit_bytes(&em, buf2, 3);
-  }
-  emit2(&em, 0x0F, 0x88);  /* js rel32 (jump if sign/negative) */
-  int skip_patch = (int)em.pos;
-  emit_u32(&em, 0);
+  /* === Check: if count < 0, skip loop === */
+  int skip_patch = jit_emit_forloop_skipcheck(&em);
 
   /* === Loop top === */
   int loop_top = (int)em.pos;
@@ -716,21 +854,17 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADDI: {
         int b = GETARG_B(inst);
         int sc = GETARG_sC(inst);
-        /* check pinned: R[A] = R[B] + sC */
         if (npinned >= 1 && a == pinned_slot[0] && b == pinned_slot[0]) {
-          /* r14 += imm (pure register) */
-          emit2(&em, 0x49, 0x81);
-          emit1(&em, 0xC6);  /* add r14, imm32 */
-          emit_u32(&em, (unsigned int)sc);
+          jit_emit_pin_addimm(&em, 0, sc);
         }
         else {
           if (npinned >= 1 && b == pinned_slot[0])
-            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF0); }  /* mov rax, r14 */
+            jit_emit_pin_to_scratch(&em, 0);
           else
             jit_emit_load_slot(&em, 0, b);
           jit_emit_addimm(&em, 0, 0, sc);
           if (npinned >= 1 && a == pinned_slot[0])
-            { emit2(&em, 0x49, 0x89); emit1(&em, 0xC6); }  /* mov r14, rax */
+            jit_emit_scratch_to_pin(&em, 0);
           else
             jit_emit_store_slot(&em, a, 0);
         }
@@ -739,39 +873,32 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       case OP_ADD: {
         int b = GETARG_B(inst);
         int c = GETARG_C(inst);
-        /* check if operands are pinned or loop var */
+        /* Fast: accumulator += loop_var (pure register) */
         if (npinned >= 1 && a == pinned_slot[0] && b == pinned_slot[0]
             && c == ra_for + 2) {
-          /* r14 += r9 (accumulator += loop var, pure register!) */
-          unsigned char bb[] = {0x4D, 0x01, 0xCE}; /* add r14, r9 */
-          emit_bytes(&em, bb, 3);
+          jit_emit_pin_add_reg(&em, 0, 5);  /* pin[0] += loopvar */
         }
         else if (npinned >= 1 && a == pinned_slot[0] && c == pinned_slot[0]
                  && b == ra_for + 2) {
-          /* r14 += r9 (reversed operands) */
-          unsigned char bb[] = {0x4D, 0x01, 0xCE};
-          emit_bytes(&em, bb, 3);
+          jit_emit_pin_add_reg(&em, 0, 5);  /* commutative */
         }
         else {
-          /* generic: load, add, store */
+          /* generic path */
           if (b == ra_for + 2)
-            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xC8); } /* mov rax, r9 */
+            jit_emit_loopvar_to_scratch(&em, 0);
           else if (npinned >= 1 && b == pinned_slot[0])
-            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF0); } /* mov rax, r14 */
+            jit_emit_pin_to_scratch(&em, 0);
           else
             jit_emit_load_slot(&em, 0, b);
-
           if (c == ra_for + 2)
-            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xC9); } /* mov rcx, r9 */
+            jit_emit_loopvar_to_scratch(&em, 1);
           else if (npinned >= 1 && c == pinned_slot[0])
-            { emit2(&em, 0x4C, 0x89); emit1(&em, 0xF1); } /* mov rcx, r14 */
+            jit_emit_pin_to_scratch(&em, 0);  /* to scratch reg 0 */
           else
             jit_emit_load_slot(&em, 1, c);
-
           jit_emit_addi(&em, 0, 0, 1);
-
           if (npinned >= 1 && a == pinned_slot[0])
-            { emit2(&em, 0x49, 0x89); emit1(&em, 0xC6); } /* mov r14, rax */
+            jit_emit_scratch_to_pin(&em, 0);
           else
             jit_emit_store_slot(&em, a, 0);
         }
@@ -872,49 +999,18 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
     emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
   }
 
-  /* === For-loop update === */
-  /* count-- */
-  {
-    unsigned char buf2[] = {0x48, 0xFF, 0xCB};  /* dec rbx */
-    emit_bytes(&em, buf2, 3);
-  }
-  /* i += step: r9 += r8 */
-  {
-    unsigned char buf2[] = {0x4D, 0x01, 0xC1};  /* add r9, r8 */
-    emit_bytes(&em, buf2, 3);
-  }
-  /* store updated i to R[A+2] for use by body instructions */
-  jit_emit_store_slot(&em, ra_for + 2, 5);  /* R[A+2] = r9 */
-
-  /* test rbx, rbx; jns loop_top (loop while count >= 0, signed) */
-  {
-    unsigned char buf2[] = {0x48, 0x85, 0xDB};  /* test rbx, rbx */
-    emit_bytes(&em, buf2, 3);
-  }
-  {
-    int rel = loop_top - ((int)em.pos + 6);
-    emit2(&em, 0x0F, 0x89);  /* jns rel32 (jump if not sign = >= 0) */
-    emit_u32(&em, (unsigned int)rel);
-  }
+  /* === For-loop update (architecture-independent) === */
+  jit_emit_forloop_update(&em, ra_for, loop_top);
 
   /* Patch skip jump */
   jit_emit_patch_jump(&em, skip_patch);
 
   /* === Store final values back to Lua stack === */
-  jit_emit_store_slot(&em, ra_for, 3);      /* R[A] = count */
-  jit_emit_store_slot(&em, ra_for + 2, 5);  /* R[A+2] = final i */
-  /* Store pinned accumulators back */
-  if (npinned >= 1) {
-    /* mov [rdi + slot*SLOT], r14 */
-    emit2(&em, 0x4C, 0x89);
-    emit1(&em, 0xB7);  /* mod=10 reg=r14 rm=rdi */
-    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
-  }
-  if (npinned >= 2) {
-    emit2(&em, 0x4C, 0x89);
-    emit1(&em, 0xBF);  /* mod=10 reg=r15 rm=rdi */
-    emit_u32(&em, (unsigned int)(pinned_slot[1] * (int)SLOT_SIZE));
-  }
+  jit_emit_forloop_store(&em, ra_for);
+  if (npinned >= 1)
+    jit_emit_pin_store(&em, 0, pinned_slot[0]);
+  if (npinned >= 2)
+    jit_emit_pin_store(&em, 1, pinned_slot[1]);
 
   /* === Epilogue === */
   jit_emit_epilogue(&em);
