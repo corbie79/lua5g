@@ -536,13 +536,13 @@ static void arm_emit32(JitEmitter *e, unsigned int inst) {
 #define ARM_CMP  10
 #define ARM_MUL_OP  0  /* special encoding */
 
-/* LDR Rd, [Rn, #offset] */
+/* LDR Rd, [Rn, #offset]:  cond|01|0|P=1|U=1|0|W=0|L=1|Rn|Rd|imm12 */
 #define ARM_LDR(cond, rd, rn, off) \
-  (((cond)<<28) | (0x05<<24) | (1<<23) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
+  (((cond)<<28) | (0x59<<20) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
 
-/* STR Rd, [Rn, #offset] */
+/* STR Rd, [Rn, #offset]:  cond|01|0|P=1|U=1|0|W=0|L=0|Rn|Rd|imm12 */
 #define ARM_STR(cond, rd, rn, off) \
-  (((cond)<<28) | (0x05<<24) | (0<<24) | (1<<23) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
+  (((cond)<<28) | (0x58<<20) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
 
 /* Branch: cond|101|L|offset (24-bit signed, in words) */
 #define ARM_B(cond, offset) \
@@ -589,7 +589,7 @@ void jit_emit_store_slot(JitEmitter *e, int lua_reg, int cpu_reg) {
   int offset = lua_reg * (int)SLOT_SIZE;
   if (offset < 4096) {
     /* STR rd, [r11, #offset] */
-    arm_emit32(e, ((ARM_AL)<<28) | (0x05<<24) | (1<<23) | (11<<16) | (rd<<12) | (offset & 0xFFF));
+    arm_emit32(e, ARM_STR(ARM_AL, rd, 11, offset));
   }
 }
 
@@ -648,8 +648,14 @@ void jit_emit_cmp_jle(JitEmitter *e, int ra, int rb, int *patch) {
 
 void jit_emit_patch_jump(JitEmitter *e, int patch_pos) {
   int target = (int)e->pos;
-  int rel = ((target - patch_pos - 8) >> 2) & 0x00FFFFFF;  /* ARM: PC+8, words */
-  unsigned int inst = ARM_B(ARM_LE, rel);
+  int rel = ((target - patch_pos - 8) >> 2) & 0x00FFFFFF;
+  /* preserve original condition code from the placeholder instruction */
+  unsigned int orig = (unsigned int)e->code[patch_pos+3] << 24 |
+                      (unsigned int)e->code[patch_pos+2] << 16 |
+                      (unsigned int)e->code[patch_pos+1] << 8 |
+                      (unsigned int)e->code[patch_pos];
+  unsigned int cond = (orig >> 28) & 0xF;
+  unsigned int inst = ARM_B(cond, rel);
   e->code[patch_pos] = (unsigned char)(inst & 0xFF);
   e->code[patch_pos+1] = (unsigned char)((inst >> 8) & 0xFF);
   e->code[patch_pos+2] = (unsigned char)((inst >> 16) & 0xFF);
@@ -690,7 +696,7 @@ void jit_emit_pin_load(JitEmitter *e, int pin_idx, int lua_reg) {
 void jit_emit_pin_store(JitEmitter *e, int pin_idx, int lua_reg) {
   int rd = (pin_idx == 0) ? 7 : 8;
   int offset = lua_reg * (int)SLOT_SIZE;
-  if (offset < 4096) arm_emit32(e, ((ARM_AL)<<28)|(0x05<<24)|(1<<23)|(11<<16)|(rd<<12)|(offset&0xFFF));
+  if (offset < 4096) arm_emit32(e, ARM_STR(ARM_AL, rd, 11, offset));
 }
 void jit_emit_pin_add_reg(JitEmitter *e, int pin_idx, int c) {
   (void)c; int rd=(pin_idx==0)?7:8;
