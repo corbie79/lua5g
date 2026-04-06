@@ -302,8 +302,214 @@ int jit_emit_forloop(JitEmitter *e, int ra, int loop_top) {
   return (int)e->pos;
 }
 
+#elif defined(JIT_ARCH_ARM)
+
+/* ============================================================ */
+/* ARMv7 code emitter (ARM mode, 32-bit instructions)            */
+/* ============================================================ */
+
+/*
+** ARMv7 register mapping:
+**   r0 = arg: pointer to Lua stack base
+**   r4-r11 = callee-saved (we use them for Lua values)
+**   r4 = rbx equivalent (count)
+**   r5 = r8 equivalent (step)
+**   r6 = r9 equivalent (control variable i)
+**   r7 = pinned accumulator #1
+**   r14 = link register (saved in prologue)
+**
+** StackValue on ARMv7 (32-bit):
+**   sizeof(TValue) = 12 (8 bytes value + 4 bytes tag on 32-bit?)
+**   Actually on 32-bit: Value = 8 bytes (union), tt_ = 1 byte,
+**   but StackValue might be padded. We use sizeof(StackValue).
+**
+** For ARMv7 with 32-bit lua_Integer: value is at offset 0, 4 bytes.
+** For ARMv7 with 64-bit lua_Number: value is at offset 0, 8 bytes.
+**
+** ARM instruction encoding: little-endian 32-bit words
+*/
+
+#define ARM_SLOT_SIZE  sizeof(StackValue)
+
+/* emit 32-bit ARM instruction (little-endian) */
+static void arm_emit32(JitEmitter *e, unsigned int inst) {
+  if (e->pos + 4 <= e->capacity) {
+    e->code[e->pos++] = (unsigned char)(inst & 0xFF);
+    e->code[e->pos++] = (unsigned char)((inst >> 8) & 0xFF);
+    e->code[e->pos++] = (unsigned char)((inst >> 16) & 0xFF);
+    e->code[e->pos++] = (unsigned char)((inst >> 24) & 0xFF);
+  }
+}
+
+/* ARM condition codes */
+#define ARM_AL  0xE   /* always */
+#define ARM_EQ  0x0
+#define ARM_NE  0x1
+#define ARM_GE  0xA
+#define ARM_LT  0xB
+#define ARM_GT  0xC
+#define ARM_LE  0xD
+#define ARM_MI  0x4   /* minus/negative */
+#define ARM_PL  0x5   /* plus/positive or zero */
+
+/* ARM data processing: cond|00|I|opcode|S|Rn|Rd|operand2 */
+#define ARM_DP(cond, op, s, rn, rd, op2) \
+  (((cond)<<28) | (0<<26) | ((op)<<21) | ((s)<<20) | ((rn)<<16) | ((rd)<<12) | (op2))
+
+/* ARM opcodes */
+#define ARM_ADD  4
+#define ARM_SUB  2
+#define ARM_MOV  13
+#define ARM_CMP  10
+#define ARM_MUL_OP  0  /* special encoding */
+
+/* LDR Rd, [Rn, #offset] */
+#define ARM_LDR(cond, rd, rn, off) \
+  (((cond)<<28) | (0x05<<24) | (1<<23) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
+
+/* STR Rd, [Rn, #offset] */
+#define ARM_STR(cond, rd, rn, off) \
+  (((cond)<<28) | (0x05<<24) | (0<<24) | (1<<23) | ((rn)<<16) | ((rd)<<12) | ((off) & 0xFFF))
+
+/* Branch: cond|101|L|offset (24-bit signed, in words) */
+#define ARM_B(cond, offset) \
+  (((cond)<<28) | (0xA<<24) | ((offset) & 0x00FFFFFF))
+
+
+void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
+  e->code = buf; e->pos = 0; e->capacity = cap;
+}
+
+/*
+** Prologue: push {r4-r11, lr}
+** r0 = base pointer (first arg, AAPCS)
+*/
+void jit_emit_prologue(JitEmitter *e) {
+  /* PUSH {r4-r11, lr} = STMFD sp!, {r4-r11, r14} */
+  arm_emit32(e, 0xE92D4FF0);  /* push {r4-r11, lr} */
+  /* mov r11, r0  (save base pointer in r11) */
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_MOV, 0, 0, 11, 0));  /* mov r11, r0 */
+}
+
+void jit_emit_epilogue(JitEmitter *e) {
+  /* mov r0, #0 (return 0) */
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_MOV, 0, 0, 0, 0));
+  /* POP {r4-r11, pc} = LDMFD sp!, {r4-r11, r15} */
+  arm_emit32(e, 0xE8BD8FF0);  /* pop {r4-r11, pc} */
+}
+
+/*
+** Load integer from Lua stack slot R[lua_reg] into ARM register.
+** ARM regs: r0-r3=scratch, r4-r10=mapped
+** LDR rd, [r11, #lua_reg * SLOT_SIZE]
+*/
+void jit_emit_load_slot(JitEmitter *e, int cpu_reg, int lua_reg) {
+  int rd = (cpu_reg < 4) ? cpu_reg : cpu_reg;  /* map directly */
+  int offset = lua_reg * (int)ARM_SLOT_SIZE;
+  if (offset < 4096) {
+    arm_emit32(e, ARM_LDR(ARM_AL, rd, 11, offset));
+  }
+}
+
+void jit_emit_store_slot(JitEmitter *e, int lua_reg, int cpu_reg) {
+  int rd = cpu_reg;
+  int offset = lua_reg * (int)ARM_SLOT_SIZE;
+  if (offset < 4096) {
+    /* STR rd, [r11, #offset] */
+    arm_emit32(e, ((ARM_AL)<<28) | (0x05<<24) | (1<<23) | (11<<16) | (rd<<12) | (offset & 0xFFF));
+  }
+}
+
+/* ADD rd, rn, rm */
+void jit_emit_addi(JitEmitter *e, int ra, int rb, int rc) {
+  (void)ra; (void)rb; (void)rc;
+  /* add r0, r0, r1 */
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, 0, 0, 1));
+}
+
+void jit_emit_subi(JitEmitter *e, int ra, int rb, int rc) {
+  (void)ra; (void)rb; (void)rc;
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_SUB, 0, 0, 0, 1));
+}
+
+void jit_emit_muli(JitEmitter *e, int ra, int rb, int rc) {
+  (void)ra; (void)rb; (void)rc;
+  /* MUL r0, r0, r1: cond|000000|AS|Rd|0000|Rs|1001|Rm */
+  arm_emit32(e, (ARM_AL<<28) | (0<<16) | (1<<8) | (0x90) | 0);
+}
+
+void jit_emit_loadi(JitEmitter *e, int ra, lua_Integer v) {
+  (void)ra;
+  /* MOV r0, #imm (for small values) + MOVT for high bits */
+  unsigned int uv = (unsigned int)v;
+  /* MOVW r0, #imm16 (ARMv7) */
+  arm_emit32(e, (ARM_AL<<28) | (0x30<<20) | (0<<12) | ((uv & 0xF000)<<4) | (uv & 0xFFF));
+  if (uv > 0xFFFF) {
+    /* MOVT r0, #imm16 */
+    unsigned int hi = uv >> 16;
+    arm_emit32(e, (ARM_AL<<28) | (0x34<<20) | (0<<12) | ((hi & 0xF000)<<4) | (hi & 0xFFF));
+  }
+}
+
+void jit_emit_addimm(JitEmitter *e, int ra, int rb, int imm) {
+  (void)ra; (void)rb;
+  /* ADD r0, r0, #imm (if imm fits in 8-bit rotated) */
+  if (imm >= 0 && imm < 256)
+    arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, 0, 0, (1<<25) | imm));
+  else {
+    /* load imm to r1, then add */
+    unsigned int uv = (unsigned int)imm;
+    arm_emit32(e, (ARM_AL<<28) | (0x30<<20) | (1<<12) | ((uv & 0xF000)<<4) | (uv & 0xFFF));
+    arm_emit32(e, ARM_DP(ARM_AL, ARM_ADD, 0, 0, 0, 1));
+  }
+}
+
+void jit_emit_cmp_jle(JitEmitter *e, int ra, int rb, int *patch) {
+  (void)ra; (void)rb;
+  /* CMP r0, r1 */
+  arm_emit32(e, ARM_DP(ARM_AL, ARM_CMP, 1, 0, 0, 1));
+  /* BLE offset (placeholder) */
+  *patch = (int)e->pos;
+  arm_emit32(e, ARM_B(ARM_LE, 0));
+}
+
+void jit_emit_patch_jump(JitEmitter *e, int patch_pos) {
+  int target = (int)e->pos;
+  int rel = ((target - patch_pos - 8) >> 2) & 0x00FFFFFF;  /* ARM: PC+8, words */
+  unsigned int inst = ARM_B(ARM_LE, rel);
+  e->code[patch_pos] = (unsigned char)(inst & 0xFF);
+  e->code[patch_pos+1] = (unsigned char)((inst >> 8) & 0xFF);
+  e->code[patch_pos+2] = (unsigned char)((inst >> 16) & 0xFF);
+  e->code[patch_pos+3] = (unsigned char)((inst >> 24) & 0xFF);
+}
+
+/* VFP double precision */
+void jit_emit_addf(JitEmitter *e, int a, int b, int c) {
+  (void)a; (void)b; (void)c;
+  /* VADD.F64 d0, d0, d1 */
+  arm_emit32(e, 0xEE300B01);
+}
+void jit_emit_subf(JitEmitter *e, int a, int b, int c) {
+  (void)a; (void)b; (void)c;
+  arm_emit32(e, 0xEE300B41);  /* VSUB.F64 d0, d0, d1 */
+}
+void jit_emit_mulf(JitEmitter *e, int a, int b, int c) {
+  (void)a; (void)b; (void)c;
+  arm_emit32(e, 0xEE200B01);  /* VMUL.F64 d0, d0, d1 */
+}
+void jit_emit_divf(JitEmitter *e, int a, int b, int c) {
+  (void)a; (void)b; (void)c;
+  arm_emit32(e, 0xEE800B01);  /* VDIV.F64 d0, d0, d1 */
+}
+int jit_emit_forloop(JitEmitter *e, int a, int t) {
+  (void)a;
+  int rel = ((t - (int)e->pos - 8) >> 2) & 0x00FFFFFF;
+  arm_emit32(e, ARM_B(ARM_AL, rel));  /* B loop_top */
+  return (int)e->pos;
+}
+
 #else
-/* Stub implementations for non-x86-64 */
+/* No JIT support on this platform */
 void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
   e->code = buf; e->pos = 0; e->capacity = cap;
 }
