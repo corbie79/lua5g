@@ -2948,6 +2948,20 @@ static void classstat (LexState *ls, int line) {
   }
 
   /*
+  ** Generate: ClassName.__name = "ClassName" (for RTTI)
+  */
+  {
+    expdesc tab, key, val;
+    buildglobal(ls, classname, &tab);
+    luaK_exp2anyregup(fs, &tab);
+    codestring(&key, luaX_newstring(ls, "__name", 6));
+    luaK_indexed(fs, &tab, &key);
+    codestring(&val, classname);
+    luaK_storevar(fs, &tab, &val);
+    luaK_fixline(fs, line);
+  }
+
+  /*
   ** If extends: setmetatable(ClassName, {__index = ParentName})
   ** Generate the equivalent bytecode:
   **   local _tmp = {}

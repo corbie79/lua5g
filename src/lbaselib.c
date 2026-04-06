@@ -599,6 +599,55 @@ static int luaB_async_run (lua_State *L) {
 
 
 /*
+** RTTI: instanceof, classname, classof, parentof
+*/
+static int luaB_instanceof (lua_State *L) {
+  if (!lua_istable(L, 1) || !lua_istable(L, 2)) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  if (!lua_getmetatable(L, 1)) { lua_pushboolean(L, 0); return 1; }
+  int depth = 0;
+  while (depth++ < 20) {
+    /* mt == class? */
+    if (lua_rawequal(L, -1, 2)) { lua_pushboolean(L, 1); return 1; }
+    /* check mt.__index */
+    if (lua_getfield(L, -1, "__index") != LUA_TTABLE) break;
+    if (lua_rawequal(L, -1, 2)) { lua_pushboolean(L, 1); return 1; }
+    /* go up: __index's metatable */
+    if (!lua_getmetatable(L, -1)) break;
+    lua_remove(L, -2); lua_remove(L, -2);
+  }
+  lua_pushboolean(L, 0);
+  return 1;
+}
+
+static int luaB_classname (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) {
+    if (lua_getfield(L, -1, "__name") == LUA_TSTRING) return 1;
+    lua_pop(L, 2);
+  }
+  lua_pushnil(L);
+  return 1;
+}
+
+static int luaB_classof (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) return 1;
+  lua_pushnil(L);
+  return 1;
+}
+
+static int luaB_parentof (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) {
+    if (lua_getfield(L, -1, "__index") == LUA_TTABLE) return 1;
+    lua_pop(L, 2);
+  }
+  lua_pushnil(L);
+  return 1;
+}
+
+
+/*
 ** __jit_compile(func) - JIT compile a function's hot loops
 ** __jit_status() - return JIT availability info
 */
@@ -689,6 +738,10 @@ static const luaL_Reg base_funcs[] = {
   {"async", luaB_async},
   {"await", luaB_await},
   {"async_run", luaB_async_run},
+  {"instanceof", luaB_instanceof},
+  {"classname", luaB_classname},
+  {"classof", luaB_classof},
+  {"parentof", luaB_parentof},
   {"__jit_status", luaB_jitstatus},
   {"__jit_compile", luaB_jitcompile},
   /* placeholders */
