@@ -735,64 +735,78 @@ void jit_emit_forloop_store(JitEmitter *e, int ra) {
 }
 
 /* ARMv7 VFP float abstractions.
-   d0=idx, d1=step, d2=limit, d3=scratch, d5=fpin accumulator
-   VLDR/VSTR: cond|1101|U|D|01|Rn|Vd|1011|imm8 */
-#define ARM_VLDR_D(cond, dd, rn, off8) \
-  (((cond)<<28)|(0xD1<<20)|(1<<23)|((rn)<<16)|(((dd)&0xF)<<12)|(0xB<<8)|((off8)&0xFF)|(((dd)>>4)<<22))
-#define ARM_VSTR_D(cond, dd, rn, off8) \
-  (((cond)<<28)|(0xD0<<20)|(1<<23)|((rn)<<16)|(((dd)&0xF)<<12)|(0xB<<8)|((off8)&0xFF)|(((dd)>>4)<<22))
+   d0=idx, d1=step, d2=limit, d3/d4=scratch, d5=fpin accumulator */
+static unsigned int arm_vldr(int cond, int dd, int rn, int off) {
+  int D=(dd>>4)&1, Vd=dd&0xF, imm8=off/4;
+  return (cond<<28)|(0xD<<24)|(1<<23)|(D<<22)|(1<<20)|(rn<<16)|(Vd<<12)|(0xB<<8)|imm8;
+}
+static unsigned int arm_vstr(int cond, int dd, int rn, int off) {
+  int D=(dd>>4)&1, Vd=dd&0xF, imm8=off/4;
+  return (cond<<28)|(0xD<<24)|(1<<23)|(D<<22)|(0<<20)|(rn<<16)|(Vd<<12)|(0xB<<8)|imm8;
+}
+static unsigned int arm_vop_f64(int cond, int op, int dd, int dn, int dm) {
+  /* op: 0=add,1=sub,2=mul,3=div */
+  int D=(dd>>4)&1,Vd=dd&0xF,N=(dn>>4)&1,Vn=dn&0xF,M=(dm>>4)&1,Vm=dm&0xF;
+  unsigned int opc1, opc2;
+  switch(op) {
+    case 0: opc1=3; opc2=0; break; /* VADD */
+    case 1: opc1=3; opc2=1; break; /* VSUB: opc2 bit6=1 */
+    case 2: opc1=2; opc2=0; break; /* VMUL */
+    default: opc1=8; opc2=0; break; /* VDIV: opc1=1000 */
+  }
+  return (cond<<28)|(0xE<<24)|(0<<23)|(D<<22)|(opc1<<20)|(Vn<<16)|(Vd<<12)|(0xB<<8)|(N<<7)|(opc2<<6)|(M<<5)|Vm;
+}
 
 void jit_emit_float_forloop_load(JitEmitter *e, int ra) {
-  int s = (int)SLOT_SIZE;
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 2, 11, (ra*s)>>2));
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 1, 11, ((ra+1)*s)>>2));
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 0, 11, ((ra+2)*s)>>2));
+  int s=(int)SLOT_SIZE;
+  arm_emit32(e, arm_vldr(ARM_AL, 2, 11, ra*s));       /* d2=limit */
+  arm_emit32(e, arm_vldr(ARM_AL, 1, 11, (ra+1)*s));   /* d1=step */
+  arm_emit32(e, arm_vldr(ARM_AL, 0, 11, (ra+2)*s));   /* d0=idx */
 }
 void jit_emit_fpin_load(JitEmitter *e, int lr) {
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 5, 11, (lr*(int)SLOT_SIZE)>>2));
+  arm_emit32(e, arm_vldr(ARM_AL, 5, 11, lr*(int)SLOT_SIZE));
 }
 void jit_emit_fpin_store(JitEmitter *e, int lr) {
-  arm_emit32(e, ARM_VSTR_D(ARM_AL, 5, 11, (lr*(int)SLOT_SIZE)>>2));
+  arm_emit32(e, arm_vstr(ARM_AL, 5, 11, lr*(int)SLOT_SIZE));
 }
 void jit_emit_fpin_op_loopvar(JitEmitter *e, int op) {
-  /* VADD/VSUB/VMUL/VDIV.F64 d5, d5, d0 */
-  unsigned int base = (op==OP_ADD)?0xEE350B00:(op==OP_SUB)?0xEE350B40:
-                      (op==OP_MUL)?0xEE250B00:0xEE850B00;
-  arm_emit32(e, base);
+  int vop = (op==OP_ADD)?0:(op==OP_SUB)?1:(op==OP_MUL)?2:3;
+  arm_emit32(e, arm_vop_f64(ARM_AL, vop, 5, 5, 0)); /* d5 = d5 op d0 */
 }
 void jit_emit_float_arith(JitEmitter *e, int a, int b, int c, int op) {
-  int s=(int)SLOT_SIZE;
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 4, 11, (c*s)>>2));
-  unsigned int base = (op==OP_ADD)?0xEE333B04:(op==OP_SUB)?0xEE333B44:
-                      (op==OP_MUL)?0xEE233B04:0xEE833B04;
-  arm_emit32(e, base);
-  arm_emit32(e, ARM_VSTR_D(ARM_AL, 3, 11, (a*s)>>2));
+  int s=(int)SLOT_SIZE, vop=(op==OP_ADD)?0:(op==OP_SUB)?1:(op==OP_MUL)?2:3;
+  arm_emit32(e, arm_vldr(ARM_AL, 3, 11, b*s));
+  arm_emit32(e, arm_vldr(ARM_AL, 4, 11, c*s));
+  arm_emit32(e, arm_vop_f64(ARM_AL, vop, 3, 3, 4));
+  arm_emit32(e, arm_vstr(ARM_AL, 3, 11, a*s));
 }
 void jit_emit_float_arith_to_fpin(JitEmitter *e, int b, int c, int op) {
-  int s=(int)SLOT_SIZE;
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 4, 11, (c*s)>>2));
-  unsigned int base = (op==OP_ADD)?0xEE333B04:(op==OP_SUB)?0xEE333B44:
-                      (op==OP_MUL)?0xEE233B04:0xEE833B04;
-  arm_emit32(e, base);
-  arm_emit32(e, 0xEEB05B43); /* VMOV.F64 d5, d3 */
+  int s=(int)SLOT_SIZE, vop=(op==OP_ADD)?0:(op==OP_SUB)?1:(op==OP_MUL)?2:3;
+  arm_emit32(e, arm_vldr(ARM_AL, 3, 11, b*s));
+  arm_emit32(e, arm_vldr(ARM_AL, 4, 11, c*s));
+  arm_emit32(e, arm_vop_f64(ARM_AL, vop, 3, 3, 4));
+  /* VMOV.F64 d5, d3: FCPYD d5, d3 */
+  arm_emit32(e, (ARM_AL<<28)|(0xEB<<20)|(0<<22)|(5<<12)|(0xB<<8)|(0x40)|(0<<5)|3);
 }
 void jit_emit_float_move(JitEmitter *e, int a, int b) {
   int s=(int)SLOT_SIZE;
-  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
-  arm_emit32(e, ARM_VSTR_D(ARM_AL, 3, 11, (a*s)>>2));
+  arm_emit32(e, arm_vldr(ARM_AL, 3, 11, b*s));
+  arm_emit32(e, arm_vstr(ARM_AL, 3, 11, a*s));
 }
 void jit_emit_float_forloop_update(JitEmitter *e, int ra, int lt) {
-  arm_emit32(e, 0xEE300B01); /* VADD.F64 d0, d0, d1 */
-  arm_emit32(e, ARM_VSTR_D(ARM_AL, 0, 11, ((ra+2)*(int)SLOT_SIZE)>>2));
-  arm_emit32(e, 0xEEB40BC2); /* VCMPE.F64 d0, d2 */
-  arm_emit32(e, 0xEEF1FA10); /* VMRS APSR_nzcv, FPSCR */
+  int s=(int)SLOT_SIZE;
+  arm_emit32(e, arm_vop_f64(ARM_AL, 0, 0, 0, 1)); /* VADD d0,d0,d1 */
+  arm_emit32(e, arm_vstr(ARM_AL, 0, 11, (ra+2)*s)); /* VSTR d0 → idx */
+  /* VCMPE.F64 d0, d2 */
+  arm_emit32(e, (ARM_AL<<28)|(0xEB<<20)|(4<<16)|(0<<12)|(0xB<<8)|(0xC0)|2);
+  /* VMRS APSR_nzcv, FPSCR */
+  arm_emit32(e, 0xEEF1FA10);
+  /* BLS loop_top (less or same = idx <= limit) */
   int rel=((lt-(int)e->pos-8)>>2)&0x00FFFFFF;
-  arm_emit32(e, ARM_B(ARM_LE, rel)); /* BLE loop_top */
+  arm_emit32(e, ARM_B(ARM_LE, rel));
 }
 void jit_emit_float_forloop_store(JitEmitter *e, int ra) {
-  arm_emit32(e, ARM_VSTR_D(ARM_AL, 0, 11, ((ra+2)*(int)SLOT_SIZE)>>2));
+  arm_emit32(e, arm_vstr(ARM_AL, 0, 11, (ra+2)*(int)SLOT_SIZE));
 }
 
 #else
