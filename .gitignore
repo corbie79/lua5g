@@ -3,3 +3,4 @@
 src/lua
 src/luac
 luac.out
+lua_arm
