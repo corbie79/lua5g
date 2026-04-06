@@ -43,11 +43,11 @@
 
 /* ORDER RESERVED */
 static const char *const luaX_tokens [] = {
-    "and", "break", "class", "do", "else", "elseif",
-    "end", "enum", "extends", "false", "for", "function",
-    "global", "goto", "if", "implements", "in", "interface",
+    "and", "break", "do", "else", "elseif",
+    "end", "false", "for", "function",
+    "global", "goto", "if", "in",
     "local", "nil", "not", "or", "repeat",
-    "return", "then", "true", "try", "until", "while",
+    "return", "then", "true", "until", "while",
     "//", "..", "...", "==", ">=", "<=", "~=",
     "<<", ">>", "::", "<eof>",
     "<number>", "<integer>", "<name>", "<string>"
@@ -198,6 +198,11 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->matchn = luaS_newliteral(L, "match");
   ls->enumin = luaS_newliteral(L, "enum");
   ls->importn = luaS_newliteral(L, "import");
+  ls->classn = luaS_newliteral(L, "class");
+  ls->extendsn = luaS_newliteral(L, "extends");
+  ls->implementsn = luaS_newliteral(L, "implements");
+  ls->interfacen = luaS_newliteral(L, "interface");
+  ls->tryn = luaS_newliteral(L, "try");
   ls->classnames = NULL;
   ls->nclasses = 0;
   ls->classnames_size = 0;

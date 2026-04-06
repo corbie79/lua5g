@@ -2728,7 +2728,7 @@ static void interfacestat (LexState *ls, int line) {
       luaX_syntaxerror(ls, "'function' or 'end' expected in interface body");
     }
   }
-  check_match(ls, TK_END, TK_INTERFACE, line);
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -2822,7 +2822,7 @@ static void enumstat (LexState *ls, int line) {
       luaX_syntaxerror(ls, "name or 'end' expected in enum body");
     }
   }
-  check_match(ls, TK_END, TK_ENUM, line);
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -2892,19 +2892,18 @@ static void classstat (LexState *ls, int line) {
 
   /* Check for 'extends' */
   TString *parentname = NULL;
-  if (ls->t.token == TK_EXTENDS) {
+  if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->extendsn) {
     luaX_next(ls);  /* skip 'extends' */
-    parentname = str_checkname(ls);  /* get parent class name */
+    parentname = str_checkname(ls);
     hasparent = 1;
   }
-  /* register parent relationship for override checking */
   register_classparent(ls, classname, parentname);
 
-  /* Check for 'implements' (one or more interfaces) */
+  /* Check for 'implements' */
   #define MAX_IMPLEMENTS 8
   TString *impl_ifaces[MAX_IMPLEMENTS];
   int nimpl = 0;
-  if (ls->t.token == TK_IMPLEMENTS) {
+  if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->implementsn) {
     luaX_next(ls);  /* skip 'implements' */
     do {
       if (nimpl >= MAX_IMPLEMENTS)
@@ -3420,7 +3419,7 @@ static void classstat (LexState *ls, int line) {
                        class_method_names, nclass_methods);
   }
 
-  check_match(ls, TK_END, TK_CLASS, line);
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -3533,7 +3532,7 @@ static void trystat (LexState *ls, int line) {
       statement(ls);
   }
 
-  check_match(ls, TK_END, TK_TRY, line);
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -3697,23 +3696,7 @@ static void statement (LexState *ls) {
       globalstatfunc(ls, line);
       break;
     }
-    case TK_CLASS: {  /* stat -> classstat */
-      classstat(ls, line);
-      break;
-    }
-    case TK_INTERFACE: {  /* stat -> interfacestat */
-      interfacestat(ls, line);
-      break;
-    }
-    case TK_ENUM: {  /* stat -> enumstat */
-      enumstat(ls, line);
-      break;
-    }
-    case TK_TRY: {  /* stat -> trystat */
-      trystat(ls, line);
-      break;
-    }
-    /* TK_MATCH removed: 'match' is contextual, handled in TK_NAME */
+    /* class/interface/enum/try/match: all contextual keywords in TK_NAME */
     case TK_DBCOLON: {  /* stat -> label */
       luaX_next(ls);  /* skip double colon */
       labelstat(ls, str_checkname(ls), line);
@@ -3734,17 +3717,27 @@ static void statement (LexState *ls) {
       break;
     }
     case TK_NAME: {
-      /* 'declare class NAME ... end' - declaration-only class (no codegen) */
+      /* All lua5g contextual keywords detected by name comparison */
+      if (ls->t.seminfo.ts == ls->classn) { classstat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->interfacen) { interfacestat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->tryn) { trystat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->enumin) {
+        int lk = luaX_lookahead(ls);
+        if (lk == TK_NAME) { enumstat(ls, line); break; }
+      }
+      if (ls->t.seminfo.ts == ls->matchn) { matchstat(ls, line); break; }
+
+      /* 'declare class NAME ... end' */
       if (strcmp(getstr(ls->t.seminfo.ts), "declare") == 0) {
         int lk = luaX_lookahead(ls);
-        if (lk == TK_CLASS) {
+        if (lk == TK_NAME && ls->lookahead.seminfo.ts == ls->classn) {
           luaX_next(ls);  /* skip 'declare' */
           luaX_next(ls);  /* skip 'class' */
           TString *dname = str_checkname(ls);
           /* register class name and optionally parent */
           register_classname(ls, dname);
           TString *dparent = NULL;
-          if (ls->t.token == TK_EXTENDS) {
+          if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->extendsn) {
             luaX_next(ls);
             dparent = str_checkname(ls);
           }
@@ -3794,7 +3787,7 @@ static void statement (LexState *ls) {
             else if (ls->t.token == ';') luaX_next(ls);
             else break;
           }
-          check_match(ls, TK_END, TK_CLASS, line);
+          check_match(ls, TK_END, TK_NAME, line);
           break;
         }
       }
