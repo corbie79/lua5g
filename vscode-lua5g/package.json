@@ -1,11 +1,13 @@
 {
   "name": "lua5g",
   "displayName": "Lua5g Language Support",
-  "description": "Syntax highlighting, snippets, and language support for Lua5g",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, snippets, LSP, and debugging for Lua5g",
+  "version": "0.2.0",
   "publisher": "lua5g",
   "engines": { "vscode": "^1.80.0" },
-  "categories": ["Programming Languages"],
+  "categories": ["Programming Languages", "Debuggers"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:lua5g"],
   "contributes": {
     "languages": [{
       "id": "lua5g",
@@ -21,6 +23,51 @@
     "snippets": [{
       "language": "lua5g",
       "path": "./snippets/lua5g.json"
+    }],
+    "configuration": {
+      "title": "Lua5g",
+      "properties": {
+        "lua5g.luaPath": {
+          "type": "string",
+          "default": "lua5g",
+          "description": "Path to lua5g executable"
+        },
+        "lua5g.lspEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable LSP server"
+        }
+      }
+    },
+    "breakpoints": [{"language": "lua5g"}],
+    "debuggers": [{
+      "type": "lua5g",
+      "label": "Lua5g Debug",
+      "program": "./debugAdapter.js",
+      "runtime": "node",
+      "languages": ["lua5g"],
+      "configurationAttributes": {
+        "launch": {
+          "required": ["program"],
+          "properties": {
+            "program": {
+              "type": "string",
+              "description": "Lua script to debug"
+            },
+            "luaPath": {
+              "type": "string",
+              "default": "lua5g",
+              "description": "Path to lua5g"
+            }
+          }
+        }
+      },
+      "initialConfigurations": [{
+        "type": "lua5g",
+        "request": "launch",
+        "name": "Debug Lua5g",
+        "program": "${file}"
+      }]
     }]
   }
 }
