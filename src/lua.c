@@ -470,7 +470,7 @@ static int handle_luainit (lua_State *L) {
 #include <readline/readline.h>
 #include <readline/history.h>
 
-/* Lua5g REPL completion: keywords + globals */
+/* Lua5g REPL completion: keywords + globals + table fields */
 static lua_State *completion_L = NULL;
 
 static const char *lua5g_keywords[] = {
@@ -481,45 +481,147 @@ static const char *lua5g_keywords[] = {
   "override","super","static","abstract","operator","property",
   "private","protected","public","readonly",
   "import","type","declare","async","await",
+  "except","finally","case",
   NULL
 };
 
+/* Pre-collected global names for completion */
+static char **global_names = NULL;
+static int global_count = 0;
+
+static void collect_globals (lua_State *L) {
+  /* free previous */
+  if (global_names) {
+    for (int i = 0; i < global_count; i++) free(global_names[i]);
+    free(global_names);
+  }
+  global_names = NULL;
+  global_count = 0;
+  int capacity = 256;
+  global_names = (char **)malloc(sizeof(char*) * (size_t)capacity);
+
+  lua_pushglobaltable(L);
+  lua_pushnil(L);
+  while (lua_next(L, -2) != 0) {
+    lua_pop(L, 1);  /* pop value */
+    if (lua_type(L, -1) == LUA_TSTRING) {
+      const char *name = lua_tostring(L, -1);
+      if (name[0] != '_' || name[1] != '_') {  /* skip __ internals */
+        if (global_count >= capacity) {
+          capacity *= 2;
+          global_names = (char **)realloc(global_names, sizeof(char*) * (size_t)capacity);
+        }
+        global_names[global_count++] = strdup(name);
+      }
+    }
+  }
+  lua_pop(L, 1);  /* pop _G */
+}
+
+/* Collect table field names for "table." completion */
+static char **field_names = NULL;
+static int field_count = 0;
+
+static void collect_fields (lua_State *L, const char *tablename) {
+  if (field_names) {
+    for (int i = 0; i < field_count; i++) free(field_names[i]);
+    free(field_names);
+  }
+  field_names = NULL;
+  field_count = 0;
+
+  /* get table from global */
+  lua_getglobal(L, tablename);
+  if (!lua_istable(L, -1)) { lua_pop(L, 1); return; }
+
+  int capacity = 64;
+  field_names = (char **)malloc(sizeof(char*) * (size_t)capacity);
+
+  lua_pushnil(L);
+  while (lua_next(L, -2) != 0) {
+    lua_pop(L, 1);
+    if (lua_type(L, -1) == LUA_TSTRING) {
+      const char *name = lua_tostring(L, -1);
+      if (field_count >= capacity) {
+        capacity *= 2;
+        field_names = (char **)realloc(field_names, sizeof(char*) * (size_t)capacity);
+      }
+      field_names[field_count++] = strdup(name);
+    }
+  }
+  lua_pop(L, 1);  /* pop table */
+}
+
 static char *lua5g_completion_gen (const char *text, int state) {
-  static int kw_idx, gl_done;
+  static int kw_idx, gl_idx, fl_idx;
   static size_t len;
-  if (state == 0) { kw_idx = 0; gl_done = 0; len = strlen(text); }
-  /* keywords first */
+  if (state == 0) { kw_idx = 0; gl_idx = 0; fl_idx = 0; len = strlen(text); }
+
+  /* field completion mode: "table.prefix" */
+  if (field_names) {
+    while (fl_idx < field_count) {
+      const char *f = field_names[fl_idx++];
+      if (strncmp(f, text, len) == 0)
+        return strdup(f);
+    }
+    return NULL;
+  }
+
+  /* keywords */
   while (lua5g_keywords[kw_idx] != NULL) {
     const char *kw = lua5g_keywords[kw_idx++];
     if (strncmp(kw, text, len) == 0)
       return strdup(kw);
   }
-  /* then globals from _G */
-  if (!gl_done && completion_L != NULL) {
-    gl_done = 1;
-    lua_pushglobaltable(completion_L);
-    lua_pushnil(completion_L);
-    while (lua_next(completion_L, -2) != 0) {
-      lua_pop(completion_L, 1);  /* pop value */
-      if (lua_type(completion_L, -1) == LUA_TSTRING) {
-        const char *name = lua_tostring(completion_L, -1);
-        if (strncmp(name, text, len) == 0) {
-          char *r = strdup(name);
-          /* continue iteration next time? actually we can't pause lua_next.
-             For simplicity, just return first match from globals */
-          lua_pop(completion_L, 2);  /* key + _G */
-          return r;
-        }
-      }
-    }
-    lua_pop(completion_L, 1);  /* pop _G */
+
+  /* globals */
+  while (gl_idx < global_count) {
+    const char *g = global_names[gl_idx++];
+    if (strncmp(g, text, len) == 0)
+      return strdup(g);
   }
+
   return NULL;
 }
 
 static char **lua5g_completion (const char *text, int start, int end) {
-  (void)start; (void)end;
-  rl_attempted_completion_over = 1;  /* don't fall back to filename completion */
+  (void)end;
+  rl_attempted_completion_over = 1;
+
+  /* refresh globals before each completion */
+  if (completion_L) collect_globals(completion_L);
+
+  /* check if completing after '.' or ':' (table field completion) */
+  if (field_names) {
+    for (int i = 0; i < field_count; i++) free(field_names[i]);
+    free(field_names);
+    field_names = NULL;
+    field_count = 0;
+  }
+
+  if (start > 0 && completion_L) {
+    const char *line = rl_line_buffer;
+    /* find the '.' or ':' before cursor */
+    int dot = start - 1;
+    if (dot >= 0 && (line[dot] == '.' || line[dot] == ':')) {
+      /* extract table name before dot */
+      int ts = dot - 1;
+      while (ts >= 0 && (line[ts] == '_' || (line[ts] >= 'a' && line[ts] <= 'z') ||
+             (line[ts] >= 'A' && line[ts] <= 'Z') ||
+             (line[ts] >= '0' && line[ts] <= '9'))) ts--;
+      ts++;
+      if (ts < dot) {
+        char tname[128];
+        int tlen = dot - ts;
+        if (tlen > 0 && tlen < 127) {
+          memcpy(tname, line + ts, (size_t)tlen);
+          tname[tlen] = '\0';
+          collect_fields(completion_L, tname);
+        }
+      }
+    }
+  }
+
   return rl_completion_matches(text, lua5g_completion_gen);
 }
 
