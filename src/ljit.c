@@ -398,6 +398,83 @@ void jit_emit_forloop_store(JitEmitter *e, int ra_for) {
 }
 
 
+/* === x86-64 float for-loop abstractions === */
+
+void jit_emit_float_forloop_load(JitEmitter *e, int ra_for) {
+  /* movsd xmm2, [rdi+limit]; movsd xmm1, [rdi+step]; movsd xmm0, [rdi+idx] */
+  unsigned char b2[] = {0xF2,0x0F,0x10,0x97}; emit_bytes(e,b2,4);
+  emit_u32(e, (unsigned int)(ra_for*(int)SLOT_SIZE));
+  unsigned char b1[] = {0xF2,0x0F,0x10,0x8F}; emit_bytes(e,b1,4);
+  emit_u32(e, (unsigned int)((ra_for+1)*(int)SLOT_SIZE));
+  unsigned char b0[] = {0xF2,0x0F,0x10,0x87}; emit_bytes(e,b0,4);
+  emit_u32(e, (unsigned int)((ra_for+2)*(int)SLOT_SIZE));
+}
+
+void jit_emit_fpin_load(JitEmitter *e, int lua_reg) {
+  unsigned char b[] = {0xF2,0x0F,0x10,0xAF}; emit_bytes(e,b,4);
+  emit_u32(e, (unsigned int)(lua_reg*(int)SLOT_SIZE));
+}
+
+void jit_emit_fpin_store(JitEmitter *e, int lua_reg) {
+  unsigned char b[] = {0xF2,0x0F,0x11,0xAF}; emit_bytes(e,b,4);
+  emit_u32(e, (unsigned int)(lua_reg*(int)SLOT_SIZE));
+}
+
+void jit_emit_fpin_op_loopvar(JitEmitter *e, int op) {
+  /* xmm5 op= xmm0 */
+  unsigned char opc = (op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  unsigned char b[] = {0xF2,0x0F,opc,0xE8}; emit_bytes(e,b,4);
+}
+
+void jit_emit_float_arith(JitEmitter *e, int a, int b, int c, int op) {
+  unsigned char opc = (op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  /* movsd xmm3, [rdi+b*SLOT] */
+  { unsigned char bb[] = {0xF2,0x0F,0x10,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(b*(int)SLOT_SIZE)); }
+  /* op xmm3, [rdi+c*SLOT] */
+  { unsigned char bb[] = {0xF2,0x0F,opc,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(c*(int)SLOT_SIZE)); }
+  /* movsd [rdi+a*SLOT], xmm3 */
+  { unsigned char bb[] = {0xF2,0x0F,0x11,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(a*(int)SLOT_SIZE)); }
+}
+
+void jit_emit_float_arith_to_fpin(JitEmitter *e, int b, int c, int op) {
+  unsigned char opc = (op==OP_ADD)?0x58:(op==OP_SUB)?0x5C:(op==OP_MUL)?0x59:0x5E;
+  { unsigned char bb[] = {0xF2,0x0F,0x10,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(b*(int)SLOT_SIZE)); }
+  { unsigned char bb[] = {0xF2,0x0F,opc,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(c*(int)SLOT_SIZE)); }
+  /* movsd xmm5, xmm3 */
+  { unsigned char bb[] = {0xF2,0x0F,0x10,0xEB}; emit_bytes(e,bb,4); }
+}
+
+void jit_emit_float_move(JitEmitter *e, int a, int b) {
+  { unsigned char bb[] = {0xF2,0x0F,0x10,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(b*(int)SLOT_SIZE)); }
+  { unsigned char bb[] = {0xF2,0x0F,0x11,0x9F}; emit_bytes(e,bb,4);
+    emit_u32(e, (unsigned int)(a*(int)SLOT_SIZE)); }
+}
+
+void jit_emit_float_forloop_update(JitEmitter *e, int ra_for, int loop_top) {
+  /* addsd xmm0, xmm1 */
+  { unsigned char b[] = {0xF2,0x0F,0x58,0xC1}; emit_bytes(e,b,4); }
+  /* movsd [rdi+(ra_for+2)*SLOT], xmm0 */
+  { unsigned char b[] = {0xF2,0x0F,0x11,0x87}; emit_bytes(e,b,4);
+    emit_u32(e, (unsigned int)((ra_for+2)*(int)SLOT_SIZE)); }
+  /* comisd xmm0, xmm2 */
+  { unsigned char b[] = {0x66,0x0F,0x2F,0xC2}; emit_bytes(e,b,4); }
+  /* jbe loop_top */
+  { int rel = loop_top - ((int)e->pos + 6);
+    emit2(e, 0x0F, 0x86); emit_u32(e, (unsigned int)rel); }
+}
+
+void jit_emit_float_forloop_store(JitEmitter *e, int ra_for) {
+  unsigned char b[] = {0xF2,0x0F,0x11,0x87}; emit_bytes(e,b,4);
+  emit_u32(e, (unsigned int)((ra_for+2)*(int)SLOT_SIZE));
+}
+
+
 #elif defined(JIT_ARCH_ARM)
 
 /* ============================================================ */
@@ -651,6 +728,67 @@ void jit_emit_forloop_store(JitEmitter *e, int ra) {
   jit_emit_store_slot(e,ra,4); jit_emit_store_slot(e,ra+2,6);
 }
 
+/* ARMv7 VFP float abstractions.
+   d0=idx, d1=step, d2=limit, d3=scratch, d5=fpin accumulator
+   VLDR/VSTR: cond|1101|U|D|01|Rn|Vd|1011|imm8 */
+#define ARM_VLDR_D(cond, dd, rn, off8) \
+  (((cond)<<28)|(0xD1<<20)|(1<<23)|((rn)<<16)|(((dd)&0xF)<<12)|(0xB<<8)|((off8)&0xFF)|(((dd)>>4)<<22))
+#define ARM_VSTR_D(cond, dd, rn, off8) \
+  (((cond)<<28)|(0xD0<<20)|(1<<23)|((rn)<<16)|(((dd)&0xF)<<12)|(0xB<<8)|((off8)&0xFF)|(((dd)>>4)<<22))
+
+void jit_emit_float_forloop_load(JitEmitter *e, int ra) {
+  int s = (int)SLOT_SIZE;
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 2, 11, (ra*s)>>2));
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 1, 11, ((ra+1)*s)>>2));
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 0, 11, ((ra+2)*s)>>2));
+}
+void jit_emit_fpin_load(JitEmitter *e, int lr) {
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 5, 11, (lr*(int)SLOT_SIZE)>>2));
+}
+void jit_emit_fpin_store(JitEmitter *e, int lr) {
+  arm_emit32(e, ARM_VSTR_D(ARM_AL, 5, 11, (lr*(int)SLOT_SIZE)>>2));
+}
+void jit_emit_fpin_op_loopvar(JitEmitter *e, int op) {
+  /* VADD/VSUB/VMUL/VDIV.F64 d5, d5, d0 */
+  unsigned int base = (op==OP_ADD)?0xEE350B00:(op==OP_SUB)?0xEE350B40:
+                      (op==OP_MUL)?0xEE250B00:0xEE850B00;
+  arm_emit32(e, base);
+}
+void jit_emit_float_arith(JitEmitter *e, int a, int b, int c, int op) {
+  int s=(int)SLOT_SIZE;
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 4, 11, (c*s)>>2));
+  unsigned int base = (op==OP_ADD)?0xEE333B04:(op==OP_SUB)?0xEE333B44:
+                      (op==OP_MUL)?0xEE233B04:0xEE833B04;
+  arm_emit32(e, base);
+  arm_emit32(e, ARM_VSTR_D(ARM_AL, 3, 11, (a*s)>>2));
+}
+void jit_emit_float_arith_to_fpin(JitEmitter *e, int b, int c, int op) {
+  int s=(int)SLOT_SIZE;
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 4, 11, (c*s)>>2));
+  unsigned int base = (op==OP_ADD)?0xEE333B04:(op==OP_SUB)?0xEE333B44:
+                      (op==OP_MUL)?0xEE233B04:0xEE833B04;
+  arm_emit32(e, base);
+  arm_emit32(e, 0xEEB05B43); /* VMOV.F64 d5, d3 */
+}
+void jit_emit_float_move(JitEmitter *e, int a, int b) {
+  int s=(int)SLOT_SIZE;
+  arm_emit32(e, ARM_VLDR_D(ARM_AL, 3, 11, (b*s)>>2));
+  arm_emit32(e, ARM_VSTR_D(ARM_AL, 3, 11, (a*s)>>2));
+}
+void jit_emit_float_forloop_update(JitEmitter *e, int ra, int lt) {
+  arm_emit32(e, 0xEE300B01); /* VADD.F64 d0, d0, d1 */
+  arm_emit32(e, ARM_VSTR_D(ARM_AL, 0, 11, ((ra+2)*(int)SLOT_SIZE)>>2));
+  arm_emit32(e, 0xEEB40BC2); /* VCMPE.F64 d0, d2 */
+  arm_emit32(e, 0xEEF1FA10); /* VMRS APSR_nzcv, FPSCR */
+  int rel=((lt-(int)e->pos-8)>>2)&0x00FFFFFF;
+  arm_emit32(e, ARM_B(ARM_LE, rel)); /* BLE loop_top */
+}
+void jit_emit_float_forloop_store(JitEmitter *e, int ra) {
+  arm_emit32(e, ARM_VSTR_D(ARM_AL, 0, 11, ((ra+2)*(int)SLOT_SIZE)>>2));
+}
+
 #else
 /* No JIT support on this platform */
 void jit_emit_init(JitEmitter *e, unsigned char *buf, size_t cap) {
@@ -683,6 +821,15 @@ void jit_emit_forloop_load(JitEmitter *e, int r) { (void)e;(void)r; }
 int jit_emit_forloop_skipcheck(JitEmitter *e) { (void)e; return 0; }
 void jit_emit_forloop_update(JitEmitter *e, int r, int t) { (void)e;(void)r;(void)t; }
 void jit_emit_forloop_store(JitEmitter *e, int r) { (void)e;(void)r; }
+void jit_emit_float_forloop_load(JitEmitter *e, int r) { (void)e;(void)r; }
+void jit_emit_float_forloop_update(JitEmitter *e, int r, int t) { (void)e;(void)r;(void)t; }
+void jit_emit_float_forloop_store(JitEmitter *e, int r) { (void)e;(void)r; }
+void jit_emit_fpin_load(JitEmitter *e, int r) { (void)e;(void)r; }
+void jit_emit_fpin_store(JitEmitter *e, int r) { (void)e;(void)r; }
+void jit_emit_fpin_op_loopvar(JitEmitter *e, int o) { (void)e;(void)o; }
+void jit_emit_float_arith(JitEmitter *e, int a, int b, int c, int o) { (void)e;(void)a;(void)b;(void)c;(void)o; }
+void jit_emit_float_arith_to_fpin(JitEmitter *e, int b, int c, int o) { (void)e;(void)b;(void)c;(void)o; }
+void jit_emit_float_move(JitEmitter *e, int a, int b) { (void)e;(void)a;(void)b; }
 #endif
 
 
@@ -700,7 +847,7 @@ void jit_emit_forloop_store(JitEmitter *e, int r) { (void)e;(void)r; }
 ** Returns 0 on success.
 */
 int luaJ_compile (lua_State *L, Proto *p, int pc) {
-#if !defined(JIT_ARCH_X64)
+#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_ARM)
   (void)L; (void)p; (void)pc;
   return JIT_FALLBACK;
 #else
@@ -964,9 +1111,7 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         if (c < p->sizek && ttisinteger(&p->k[c])) {
           jit_emit_load_slot(&em, 0, b);
           lua_Integer kval = ivalue(&p->k[c]);
-          /* sub rax, imm32 */
-          emit2(&em, 0x48, 0x2D);
-          emit_u32(&em, (unsigned int)(int)kval);
+          jit_emit_addimm(&em, 0, 0, (int)(-kval));
           jit_emit_store_slot(&em, a, 0);
         }
         break;
@@ -993,11 +1138,8 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
 
   /* Flush pinned accumulators to stack before for-loop update
      (GETFIELD/SETFIELD reads from stack) */
-  if (npinned >= 1) {
-    emit2(&em, 0x4C, 0x89);
-    emit1(&em, 0xB7);
-    emit_u32(&em, (unsigned int)(pinned_slot[0] * (int)SLOT_SIZE));
-  }
+  if (npinned >= 1)
+    jit_emit_pin_store(&em, 0, pinned_slot[0]);
 
   /* === For-loop update (architecture-independent) === */
   jit_emit_forloop_update(&em, ra_for, loop_top);
@@ -1042,34 +1184,13 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
     /* prologue */
     jit_emit_prologue(&fem);
 
-    /* load float loop vars from stack:
-       xmm2 = R[A].value_ (limit)
-       xmm1 = R[A+1].value_ (step)
-       xmm0 = R[A+2].value_ (control/idx) */
-    #define FEMIT(b, n) emit_bytes(&fem, (const unsigned char[]){b}, n)
-    /* movsd xmm2, [rdi + ra_for*SLOT_SIZE] ; limit */
-    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x97};
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)(ra_for * (int)SLOT_SIZE)); }
-    /* movsd xmm1, [rdi + (ra_for+1)*SLOT_SIZE] ; step */
-    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x8F};
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)((ra_for + 1) * (int)SLOT_SIZE)); }
-    /* movsd xmm0, [rdi + (ra_for+2)*SLOT_SIZE] ; idx */
-    { unsigned char b[] = {0xF2, 0x0F, 0x10, 0x87};
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
+    /* load float loop vars */
+    jit_emit_float_forloop_load(&fem, ra_for);
 
-    /* Float register promotion: pin accumulator to xmm5.
-       Reuse the same npinned/pinned_slot from int analysis. */
-    /* If accumulator found, load into xmm5 before loop */
+    /* Float register promotion */
     int fpinned = (npinned >= 1) ? pinned_slot[0] : -1;
-    if (fpinned >= 0) {
-      /* movsd xmm5, [rdi + slot*SLOT] */
-      unsigned char bb[] = {0xF2, 0x0F, 0x10, 0xAF};
-      emit_bytes(&fem, bb, 4);
-      emit_u32(&fem, (unsigned int)(fpinned * (int)SLOT_SIZE));
-    }
+    if (fpinned >= 0)
+      jit_emit_fpin_load(&fem, fpinned);
 
     /* === Loop top === */
     int floop_top = (int)fem.pos;
@@ -1084,74 +1205,20 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
         case OP_DIV: case OP_IDIV: {
           int b2 = GETARG_B(inst);
           int c2 = GETARG_C(inst);
-          unsigned char opc;
-          if (op == OP_ADD) opc = 0x58;
-          else if (op == OP_SUB) opc = 0x5C;
-          else if (op == OP_MUL) opc = 0x59;
-          else opc = 0x5E;  /* DIV/IDIV → divsd */
-          /* Fast path: accumulator op loop_var → pure register */
           if (fpinned >= 0 && a == fpinned && b2 == fpinned
-              && c2 == ra_for + 2) {
-            /* xmm5 op= xmm0 (accumulator += loop var) */
-            unsigned char bb[] = {0xF2, 0x0F, opc, 0xE8};
-            emit_bytes(&fem, bb, 4);
-          }
+              && c2 == ra_for + 2)
+            jit_emit_fpin_op_loopvar(&fem, op);
           else if (fpinned >= 0 && a == fpinned && c2 == fpinned
-                   && b2 == ra_for + 2 && op == OP_ADD) {
-            /* xmm5 += xmm0 (reversed, addition is commutative) */
-            unsigned char bb[] = {0xF2, 0x0F, 0x58, 0xE8};
-            emit_bytes(&fem, bb, 4);
-          }
-          else {
-            /* Generic: load from memory, op, store */
-            { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
-              emit_bytes(&fem, bb, 4);
-              emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
-            { unsigned char bb[] = {0xF2, 0x0F, opc, 0x9F};
-              emit_bytes(&fem, bb, 4);
-              emit_u32(&fem, (unsigned int)(c2 * (int)SLOT_SIZE)); }
-            if (fpinned >= 0 && a == fpinned) {
-              /* movsd xmm5, xmm3 */
-              unsigned char bb[] = {0xF2, 0x0F, 0x10, 0xEB};
-              emit_bytes(&fem, bb, 4);
-            }
-            else {
-              unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
-              emit_bytes(&fem, bb, 4);
-              emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE));
-            }
-          }
-          break;
-        }
-        case OP_ADDI: {
-          int b2 = GETARG_B(inst);
-          int sc = GETARG_sC(inst);
-          /* load R[B] */
-          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
-            emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
-          /* need to convert int imm to double - use stack temp */
-          /* push imm as int, cvtsi2sd */
-          /* mov eax, imm; cvtsi2sd xmm4, eax; addsd xmm3, xmm4 */
-          { unsigned char bb[] = {0xB8}; emit_bytes(&fem, bb, 1);
-            emit_u32(&fem, (unsigned int)sc); }
-          { unsigned char bb[] = {0xF2, 0x0F, 0x2A, 0xE0};
-            emit_bytes(&fem, bb, 4); } /* cvtsi2sd xmm4, eax */
-          { unsigned char bb[] = {0xF2, 0x0F, 0x58, 0xDC};
-            emit_bytes(&fem, bb, 4); } /* addsd xmm3, xmm4 */
-          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
-            emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+                   && b2 == ra_for + 2 && op == OP_ADD)
+            jit_emit_fpin_op_loopvar(&fem, OP_ADD);
+          else if (fpinned >= 0 && a == fpinned)
+            jit_emit_float_arith_to_fpin(&fem, b2, c2, op);
+          else
+            jit_emit_float_arith(&fem, a, b2, c2, op);
           break;
         }
         case OP_MOVE: {
-          int b2 = GETARG_B(inst);
-          { unsigned char bb[] = {0xF2, 0x0F, 0x10, 0x9F};
-            emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(b2 * (int)SLOT_SIZE)); }
-          { unsigned char bb[] = {0xF2, 0x0F, 0x11, 0x9F};
-            emit_bytes(&fem, bb, 4);
-            emit_u32(&fem, (unsigned int)(a * (int)SLOT_SIZE)); }
+          jit_emit_float_move(&fem, a, GETARG_B(inst));
           break;
         }
         case OP_MMBIN: case OP_MMBINI: case OP_MMBINK:
@@ -1163,33 +1230,11 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
       }
     }
 
-    /* === Float loop update: idx += step; if idx <= limit continue === */
-    /* addsd xmm0, xmm1 (idx += step) */
-    { unsigned char b[] = {0xF2, 0x0F, 0x58, 0xC1};
-      emit_bytes(&fem, b, 4); }
-    /* store updated idx to R[A+2] */
-    { unsigned char b[] = {0xF2, 0x0F, 0x11, 0x87};
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
-    /* comisd xmm0, xmm2 (compare idx with limit) */
-    { unsigned char b[] = {0x66, 0x0F, 0x2F, 0xC2};
-      emit_bytes(&fem, b, 4); }
-    /* jbe floop_top (jump if idx <= limit, i.e., CF=1 or ZF=1) */
-    { int rel = floop_top - ((int)fem.pos + 6);
-      unsigned char b[] = {0x0F, 0x86};
-      emit_bytes(&fem, b, 2);
-      emit_u32(&fem, (unsigned int)rel); }
-
-    /* store final idx */
-    { unsigned char b[] = {0xF2, 0x0F, 0x11, 0x87};
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)((ra_for + 2) * (int)SLOT_SIZE)); }
-    /* store pinned float accumulator (xmm5) back */
-    if (fpinned >= 0) {
-      unsigned char b[] = {0xF2, 0x0F, 0x11, 0xAF};  /* movsd [rdi+disp], xmm5 */
-      emit_bytes(&fem, b, 4);
-      emit_u32(&fem, (unsigned int)(fpinned * (int)SLOT_SIZE));
-    }
+    /* === Float loop update (architecture-independent) === */
+    jit_emit_float_forloop_update(&fem, ra_for, floop_top);
+    jit_emit_float_forloop_store(&fem, ra_for);
+    if (fpinned >= 0)
+      jit_emit_fpin_store(&fem, fpinned);
 
     jit_emit_epilogue(&fem);
     fcode_size = fem.pos;
@@ -1219,7 +1264,7 @@ int luaJ_compile (lua_State *L, Proto *p, int pc) {
 ** Returns 0 on success.
 */
 int luaJ_execute (lua_State *L, CallInfo *ci, JitTrace *trace) {
-#if !defined(JIT_ARCH_X64)
+#if !defined(JIT_ARCH_X64) && !defined(JIT_ARCH_ARM)
   (void)L; (void)ci; (void)trace;
   return -1;
 #else

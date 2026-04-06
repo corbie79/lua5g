@@ -135,4 +135,20 @@ LUAI_FUNC void jit_emit_forloop_store(JitEmitter *e, int ra_for);
 /* Move loop variable (r9/r6) to scratch */
 LUAI_FUNC void jit_emit_loopvar_to_scratch(JitEmitter *e, int cpu_reg);
 
+/* Float for-loop operations */
+LUAI_FUNC void jit_emit_float_forloop_load(JitEmitter *e, int ra_for);
+LUAI_FUNC void jit_emit_float_forloop_update(JitEmitter *e, int ra_for, int loop_top);
+LUAI_FUNC void jit_emit_float_forloop_store(JitEmitter *e, int ra_for);
+/* Float pinned accumulator (xmm5 / d5) */
+LUAI_FUNC void jit_emit_fpin_load(JitEmitter *e, int lua_reg);
+LUAI_FUNC void jit_emit_fpin_store(JitEmitter *e, int lua_reg);
+/* Float pinned op loopvar: fpin += float_loopvar */
+LUAI_FUNC void jit_emit_fpin_op_loopvar(JitEmitter *e, int opcode);
+/* Float generic: R[a] = R[b] op R[c] (double) */
+LUAI_FUNC void jit_emit_float_arith(JitEmitter *e, int a, int b, int c, int opcode);
+/* Float generic: R[a] = R[b] op R[c], result to fpin */
+LUAI_FUNC void jit_emit_float_arith_to_fpin(JitEmitter *e, int b, int c, int opcode);
+/* Float move: R[a] = R[b] (double) */
+LUAI_FUNC void jit_emit_float_move(JitEmitter *e, int a, int b);
+
 #endif
