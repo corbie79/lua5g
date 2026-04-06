@@ -1,8 +1,8 @@
-# Lua5g
+# Dala
 
 > **Lua 5.5 fork with type system, classes, JIT compiler, and modern language features.**
 
-Lua5g extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full class system with inheritance and access control, a lightweight JIT compiler, and modern syntax — while maintaining full backward compatibility with standard Lua.
+Dala extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full class system with inheritance and access control, a lightweight JIT compiler, and modern syntax — while maintaining full backward compatibility with standard Lua.
 
 ---
 
@@ -10,10 +10,10 @@ Lua5g extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full c
 
 **JIT Compiler** — 50M integer sum benchmark:
 
-- **Lua5g JIT (x86-64)** — `0.037s` / `1,340 Mops` — matches LuaJIT
+- **Dala JIT (x86-64)** — `0.037s` / `1,340 Mops` — matches LuaJIT
 - **LuaJIT (JIT ON)** — `0.035s` / `1,412 Mops`
 - **LuaJIT (JIT OFF)** — `0.203s` / `246 Mops`
-- **Lua5g interpreter** — `0.229s` / `219 Mops`
+- **Dala interpreter** — `0.229s` / `219 Mops`
 
 **Native Arrays** (`mathx.farray`) vs Lua tables:
 
@@ -79,9 +79,9 @@ make linux MYCFLAGS="-DLUA_USE_READLINE" MYLIBS="-lreadline"
 ### Type Checking Modes
 
 ```bash
-lua5g script.lua            # default: types optional (gradual)
-lua5g --strict script.lua   # all locals must have types
-lua5g --legacy script.lua   # type annotations ignored
+dala script.lua            # default: types optional (gradual)
+dala --strict script.lua   # all locals must have types
+dala --legacy script.lua   # type annotations ignored
 ```
 
 ---
@@ -90,7 +90,7 @@ lua5g --legacy script.lua   # type annotations ignored
 
 ```lua
 -- Type annotations
-local name: string = "Lua5g"
+local name: string = "Dala"
 local count: number = 42
 
 -- Classes
@@ -155,16 +155,16 @@ Detailed documentation is available in the `docs/` directory:
 
 ## VSCode Extension
 
-Full IDE support in `vscode-lua5g/`:
+Full IDE support in `vscode-dala/`:
 
-- **Syntax highlighting** — All Lua5g keywords, types, modifiers
+- **Syntax highlighting** — All Dala keywords, types, modifiers
 - **12 code snippets** — class, try, match, lambda, enum, etc.
 - **LSP server** — Autocomplete, hover info
 - **DAP debugger** — Breakpoints, step, variable inspection
 - **Tab completion** — Keywords + globals + table fields in REPL
 
 ```bash
-cp -r vscode-lua5g ~/.vscode/extensions/
+cp -r vscode-dala ~/.vscode/extensions/
 ```
 
 ---
@@ -182,10 +182,10 @@ cp -r vscode-lua5g ~/.vscode/extensions/
 
 ```bash
 # ARMv7
-arm-linux-gnueabihf-gcc -static -DLUA_USE_LINUX src/*.c -o lua5g_arm -lm
+arm-linux-gnueabihf-gcc -static -DLUA_USE_LINUX src/*.c -o dala_arm -lm
 
 # x86 32-bit
-gcc -m32 -DLUA_USE_LINUX src/*.c -o lua5g_x86 -lm
+gcc -m32 -DLUA_USE_LINUX src/*.c -o dala_x86 -lm
 ```
 
 ---

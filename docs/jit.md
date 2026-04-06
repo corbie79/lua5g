@@ -70,9 +70,9 @@ end
 **50M integer sum** (`for i = 1, 50000000 do sum = sum + i end`):
 
 - **LuaJIT (JIT ON)** — `0.035s` — `1,412 Mops/s`
-- **Lua5g JIT (x64)** — `0.037s` — `1,340 Mops/s` — **95% of LuaJIT**
+- **Dala JIT (x64)** — `0.037s` — `1,340 Mops/s` — **95% of LuaJIT**
 - **LuaJIT (JIT OFF)** — `0.203s` — `246 Mops/s`
-- **Lua5g interpreter** — `0.229s` — `219 Mops/s`
+- **Dala interpreter** — `0.229s` — `219 Mops/s`
 
 **Speedup**: 6.2x (integer), 6.6x (float)
 

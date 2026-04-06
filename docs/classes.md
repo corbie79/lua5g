@@ -188,7 +188,7 @@ declare class Vec2
 end
 ```
 
-Load with `lua5g -d vec2.d.lua script.lua`.
+Load with `dala -d vec2.d.lua script.lua`.
 
 ---
 

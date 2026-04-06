@@ -1,6 +1,6 @@
 # Type System
 
-Lua5g adds gradual type annotations to Lua. Types are checked at both compile time and runtime.
+Dala adds gradual type annotations to Lua. Types are checked at both compile time and runtime.
 
 ---
 
@@ -101,9 +101,9 @@ Parameter and return types are annotations (parsed, not enforced at runtime).
 ## Checking Modes
 
 ```bash
-lua5g script.lua            # default: types optional
-lua5g --strict script.lua   # all locals must have type annotations
-lua5g --legacy script.lua   # type annotations completely ignored
+dala script.lua            # default: types optional
+dala --strict script.lua   # all locals must have type annotations
+dala --legacy script.lua   # type annotations completely ignored
 ```
 
 ---

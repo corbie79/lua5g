@@ -1,9 +1,9 @@
-// Lua5g Debug Adapter - bridges VSCode DAP to lua5g debugger.lua
+// Dala Debug Adapter - bridges VSCode DAP to dala debugger.lua
 const { spawn } = require('child_process');
 const path = require('path');
 
 // The debugger is a Lua script that speaks DAP over stdin/stdout
-const luaPath = process.env.LUA5G_PATH || 'lua5g';
+const luaPath = process.env.DALA_PATH || 'dala';
 const debugScript = path.join(__dirname, '..', 'tools', 'lsp', 'debugger.lua');
 
 const child = spawn(luaPath, [debugScript], {

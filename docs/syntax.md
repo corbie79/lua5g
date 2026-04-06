@@ -99,7 +99,7 @@ Built on Lua coroutines.
 
 ## Contextual Keywords
 
-All Lua5g keywords behave as regular names after `.` or `:`:
+All Dala keywords behave as regular names after `.` or `:`:
 
 ```lua
 class Foo end            -- keyword

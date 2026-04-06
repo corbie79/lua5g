@@ -126,15 +126,15 @@ Workflow:
 
 ## CLI Options
 
-### lua5g
+### dala
 
 ```bash
-lua5g script.lua              # run script
-lua5g -e 'print(42)'          # run string
-lua5g -i                       # interactive REPL
-lua5g -d types.d.lua app.lua   # load declarations first
-lua5g --strict script.lua      # require types on all locals
-lua5g --legacy script.lua      # ignore type annotations
+dala script.lua              # run script
+dala -e 'print(42)'          # run string
+dala -i                       # interactive REPL
+dala -d types.d.lua app.lua   # load declarations first
+dala --strict script.lua      # require types on all locals
+dala --legacy script.lua      # ignore type annotations
 ```
 
 ### luac
@@ -151,7 +151,7 @@ luac -s -o out.luac in.lua     # strip everything
 ## Document Generator
 
 ```bash
-lua5g tools/docgen.lua api.d.lua > api.md
+dala tools/docgen.lua api.d.lua > api.md
 ```
 
 Parses `declare class`, `interface`, `enum` from `.d.lua` files and generates markdown.
