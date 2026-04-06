@@ -1,4 +1,4 @@
--- Comprehensive regression test suite for lua5g
+-- Comprehensive regression test suite for dala
 -- Tests all added features: types, classes, access control, JIT
 
 local pass, fail = 0, 0
@@ -27,7 +27,7 @@ local function expect_error(name, fn, pattern)
   end
 end
 
-print("=== Lua5g Regression Tests ===\n")
+print("=== Dala Regression Tests ===\n")
 
 -- ============================================================
 -- 1. Standard Lua still works

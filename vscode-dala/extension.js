@@ -1,4 +1,4 @@
-// Lua5g VSCode Extension - LSP Client
+// Dala VSCode Extension - LSP Client
 const vscode = require('vscode');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 const path = require('path');
@@ -6,13 +6,13 @@ const path = require('path');
 let client;
 
 function activate(context) {
-  const config = vscode.workspace.getConfiguration('lua5g');
-  const luaPath = config.get('luaPath', 'lua5g');
+  const config = vscode.workspace.getConfiguration('dala');
+  const luaPath = config.get('luaPath', 'dala');
   const lspEnabled = config.get('lspEnabled', true);
 
   if (!lspEnabled) return;
 
-  // LSP server is a Lua script run by lua5g
+  // LSP server is a Lua script run by dala
   const serverScript = path.join(context.extensionPath, '..', 'tools', 'lsp', 'server.lua');
 
   const serverOptions = {
@@ -22,22 +22,22 @@ function activate(context) {
 
   const clientOptions = {
     documentSelector: [
-      { scheme: 'file', language: 'lua5g' }
+      { scheme: 'file', language: 'dala' }
     ],
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{lua,lua5g,d.lua}')
+      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{lua,dala,d.lua}')
     }
   };
 
-  client = new LanguageClient('lua5g', 'Lua5g Language Server', serverOptions, clientOptions);
+  client = new LanguageClient('dala', 'Dala Language Server', serverOptions, clientOptions);
   client.start();
 
   context.subscriptions.push(client);
 
   // Status bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-  statusBar.text = '$(symbol-class) Lua5g';
-  statusBar.tooltip = 'Lua5g Language Server';
+  statusBar.text = '$(symbol-class) Dala';
+  statusBar.tooltip = 'Dala Language Server';
   statusBar.show();
   context.subscriptions.push(statusBar);
 }

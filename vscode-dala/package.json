@@ -1,51 +1,51 @@
 {
-  "name": "lua5g",
-  "displayName": "Lua5g Language Support",
-  "description": "Syntax highlighting, snippets, LSP, and debugging for Lua5g",
+  "name": "dala",
+  "displayName": "Dala Language Support",
+  "description": "Syntax highlighting, snippets, LSP, and debugging for Dala",
   "version": "0.2.0",
-  "publisher": "lua5g",
+  "publisher": "dala",
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Programming Languages", "Debuggers"],
   "main": "./extension.js",
-  "activationEvents": ["onLanguage:lua5g"],
+  "activationEvents": ["onLanguage:dala"],
   "contributes": {
     "languages": [{
-      "id": "lua5g",
-      "aliases": ["Lua5g", "lua5g"],
-      "extensions": [".lua", ".lua5g", ".d.lua"],
+      "id": "dala",
+      "aliases": ["Dala", "dala"],
+      "extensions": [".lua", ".dala", ".d.lua"],
       "configuration": "./language-configuration.json"
     }],
     "grammars": [{
-      "language": "lua5g",
-      "scopeName": "source.lua5g",
-      "path": "./syntaxes/lua5g.tmLanguage.json"
+      "language": "dala",
+      "scopeName": "source.dala",
+      "path": "./syntaxes/dala.tmLanguage.json"
     }],
     "snippets": [{
-      "language": "lua5g",
-      "path": "./snippets/lua5g.json"
+      "language": "dala",
+      "path": "./snippets/dala.json"
     }],
     "configuration": {
-      "title": "Lua5g",
+      "title": "Dala",
       "properties": {
-        "lua5g.luaPath": {
+        "dala.luaPath": {
           "type": "string",
-          "default": "lua5g",
-          "description": "Path to lua5g executable"
+          "default": "dala",
+          "description": "Path to dala executable"
         },
-        "lua5g.lspEnabled": {
+        "dala.lspEnabled": {
           "type": "boolean",
           "default": true,
           "description": "Enable LSP server"
         }
       }
     },
-    "breakpoints": [{"language": "lua5g"}],
+    "breakpoints": [{"language": "dala"}],
     "debuggers": [{
-      "type": "lua5g",
-      "label": "Lua5g Debug",
+      "type": "dala",
+      "label": "Dala Debug",
       "program": "./debugAdapter.js",
       "runtime": "node",
-      "languages": ["lua5g"],
+      "languages": ["dala"],
       "configurationAttributes": {
         "launch": {
           "required": ["program"],
@@ -56,16 +56,16 @@
             },
             "luaPath": {
               "type": "string",
-              "default": "lua5g",
-              "description": "Path to lua5g"
+              "default": "dala",
+              "description": "Path to dala"
             }
           }
         }
       },
       "initialConfigurations": [{
-        "type": "lua5g",
+        "type": "dala",
         "request": "launch",
-        "name": "Debug Lua5g",
+        "name": "Debug Dala",
         "program": "${file}"
       }]
     }]

@@ -1,5 +1,5 @@
 /*
-** ljit.h - Lightweight JIT compiler for Lua5g
+** ljit.h - Lightweight JIT compiler for Dala
 ** Compiles hot numeric loops to native machine code.
 ** Supports: x86-64, ARM64 (with architecture backends)
 */

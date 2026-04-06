@@ -1,11 +1,11 @@
-# Lua5g for VSCode
+# Dala for VSCode
 
-Syntax highlighting, snippets, and language support for Lua5g.
+Syntax highlighting, snippets, and language support for Dala.
 
 ## Features
 
 ### Syntax Highlighting
-- All Lua5g keywords: `class`, `extends`, `interface`, `enum`, `try`/`except`/`finally`, `match`/`case`
+- All Dala keywords: `class`, `extends`, `interface`, `enum`, `try`/`except`/`finally`, `match`/`case`
 - Type annotations: `: number`, `: string`, `: ClassName`
 - Access modifiers: `public`, `private`, `protected`, `readonly`
 - Lambda expressions: `|x| x * 2`
@@ -35,9 +35,9 @@ Smart indentation for all block structures.
 
 ## Installation
 
-1. Copy `vscode-lua5g` folder to `~/.vscode/extensions/`
+1. Copy `vscode-dala` folder to `~/.vscode/extensions/`
 2. Restart VSCode
-3. Open any `.lua` or `.lua5g` file
+3. Open any `.lua` or `.dala` file
 
 ## Color Themes
 

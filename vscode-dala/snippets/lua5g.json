@@ -10,7 +10,7 @@
       "  end",
       "end"
     ],
-    "description": "Lua5g class declaration"
+    "description": "Dala class declaration"
   },
   "Class Extends": {
     "prefix": "classext",
@@ -23,7 +23,7 @@
       "  end",
       "end"
     ],
-    "description": "Lua5g class with inheritance"
+    "description": "Dala class with inheritance"
   },
   "Interface": {
     "prefix": "interface",
@@ -32,7 +32,7 @@
       "  function ${2:method}(self${3:}): ${4:nil}",
       "end"
     ],
-    "description": "Lua5g interface declaration"
+    "description": "Dala interface declaration"
   },
   "Enum": {
     "prefix": "enum",
@@ -42,7 +42,7 @@
       "  ${3:VALUE2}",
       "end"
     ],
-    "description": "Lua5g enum declaration"
+    "description": "Dala enum declaration"
   },
   "Try/Except": {
     "prefix": "try",

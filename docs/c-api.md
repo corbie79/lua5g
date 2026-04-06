@@ -77,7 +77,7 @@ declare class Player
 end
 ```
 
-Usage: `lua5g -d mylib.d.lua script.lua`
+Usage: `dala -d mylib.d.lua script.lua`
 
 ---
 

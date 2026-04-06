@@ -1,10 +1,10 @@
 #!/usr/bin/env lua
 --[[
-  Lua5g Language Server Protocol (LSP) server
+  Dala Language Server Protocol (LSP) server
   Provides: autocomplete, hover, diagnostics, go-to-definition
 
-  Run: lua5g tools/lsp/server.lua
-  VSCode config: see vscode-lua5g/package.json
+  Run: dala tools/lsp/server.lua
+  VSCode config: see vscode-dala/package.json
 ]]
 
 local io = io
@@ -115,7 +115,7 @@ end
 -- ============================================================
 
 local function log(msg)
-  io.stderr:write("[lua5g-lsp] " .. msg .. "\n")
+  io.stderr:write("[dala-lsp] " .. msg .. "\n")
   io.stderr:flush()
 end
 
@@ -152,7 +152,7 @@ end
 -- Language intelligence
 -- ============================================================
 
--- Lua5g keywords for completion
+-- Dala keywords for completion
 local keywords = {
   "and","break","class","do","else","elseif","end","enum","extends",
   "false","for","function","global","goto","if","implements","in",
@@ -224,7 +224,7 @@ handlers["initialize"] = function(id, params)
       },
     },
     serverInfo = {
-      name = "lua5g-lsp",
+      name = "dala-lsp",
       version = "0.1.0",
     },
   })
@@ -341,7 +341,7 @@ handlers["textDocument/hover"] = function(id, params)
         declare = "Declaration-only class (for C bindings): `declare class Name ... end`",
         lambda = "Lambda expression: `|x, y| expr`",
       }
-      info = descs[word] or ("Lua5g keyword: `" .. word .. "`")
+      info = descs[word] or ("Dala keyword: `" .. word .. "`")
       break
     end
   end
@@ -372,7 +372,7 @@ end
 -- Main loop
 -- ============================================================
 
-log("Lua5g LSP server starting...")
+log("Dala LSP server starting...")
 
 while true do
   local msg = read_message()

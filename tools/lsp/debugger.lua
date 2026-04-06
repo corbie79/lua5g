@@ -1,6 +1,6 @@
 #!/usr/bin/env lua
 --[[
-  Lua5g Debug Adapter Protocol (DAP) server
+  Dala Debug Adapter Protocol (DAP) server
   Provides: breakpoints, step, variable inspection
 
   Communicates via stdin/stdout JSON-RPC (DAP protocol).
@@ -55,7 +55,7 @@ end
 local seq = 1
 
 local function log(msg)
-  io.stderr:write("[lua5g-dap] " .. msg .. "\n")
+  io.stderr:write("[dala-dap] " .. msg .. "\n")
   io.stderr:flush()
 end
 
@@ -337,7 +337,7 @@ end
 -- Main
 -- ============================================================
 
-log("Lua5g DAP debugger starting...")
+log("Dala DAP debugger starting...")
 
 while true do
   local msg = read_message()

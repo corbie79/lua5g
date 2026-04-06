@@ -2361,7 +2361,7 @@ static void localstat (LexState *ls) {
     TString *vname = str_checkname(ls);  /* get its name */
     TString *typanno = optional_type_annotation(ls);  /* optional ': type' */
     /* strict mode: require type annotation */
-    if (typanno == NULL && G(ls->L)->typemode == LUA5G_MODE_STRICT)
+    if (typanno == NULL && G(ls->L)->typemode == DALA_MODE_STRICT)
       luaK_semerror(ls, "strict mode: variable '%s' must have a type annotation",
                     getstr(vname));
     lu_byte kind = getvarattribute(ls, defkind);  /* postfixed attribute */
@@ -2397,7 +2397,7 @@ static void localstat (LexState *ls) {
   checktoclose(fs, toclose);
   /* emit OP_TYPECHECK for typed variables (after assignment)
      Legacy mode: skip all type checks */
-  if (G(ls->L)->typemode == LUA5G_MODE_LEGACY) goto skip_typecheck;
+  if (G(ls->L)->typemode == DALA_MODE_LEGACY) goto skip_typecheck;
   if (nexps > 0) {  /* only if there are initializers */
     int i;
     for (i = 0; i < nvars; i++) {
@@ -3738,7 +3738,7 @@ static void statement (LexState *ls) {
       break;
     }
     case TK_NAME: {
-      /* All lua5g contextual keywords detected by name comparison */
+      /* All dala contextual keywords detected by name comparison */
       if (ls->t.seminfo.ts == ls->classn) { classstat(ls, line); break; }
       if (ls->t.seminfo.ts == ls->interfacen) { interfacestat(ls, line); break; }
       if (ls->t.seminfo.ts == ls->tryn) { trystat(ls, line); break; }

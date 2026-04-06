@@ -428,7 +428,7 @@ static int handle_luainit (lua_State *L) {
 */
 
 #if !defined(LUA_PROMPT)
-#define LUA_PROMPT		"lua5g> "
+#define LUA_PROMPT		"dala> "
 #define LUA_PROMPT2		"   ... "
 #endif
 
@@ -482,10 +482,10 @@ static int handle_luainit (lua_State *L) {
 #include <readline/readline.h>
 #include <readline/history.h>
 
-/* Lua5g REPL completion: keywords + globals + table fields */
+/* Dala REPL completion: keywords + globals + table fields */
 static lua_State *completion_L = NULL;
 
-static const char *lua5g_keywords[] = {
+static const char *dala_keywords[] = {
   "and","break","class","do","else","elseif","end","enum","extends",
   "false","for","function","global","goto","if","implements","in",
   "interface","local","match","nil","not","or","repeat","return",
@@ -564,7 +564,7 @@ static void collect_fields (lua_State *L, const char *tablename) {
   lua_pop(L, 1);  /* pop table */
 }
 
-static char *lua5g_completion_gen (const char *text, int state) {
+static char *dala_completion_gen (const char *text, int state) {
   static int kw_idx, gl_idx, fl_idx;
   static size_t len;
   if (state == 0) { kw_idx = 0; gl_idx = 0; fl_idx = 0; len = strlen(text); }
@@ -580,8 +580,8 @@ static char *lua5g_completion_gen (const char *text, int state) {
   }
 
   /* keywords */
-  while (lua5g_keywords[kw_idx] != NULL) {
-    const char *kw = lua5g_keywords[kw_idx++];
+  while (dala_keywords[kw_idx] != NULL) {
+    const char *kw = dala_keywords[kw_idx++];
     if (strncmp(kw, text, len) == 0)
       return strdup(kw);
   }
@@ -596,7 +596,7 @@ static char *lua5g_completion_gen (const char *text, int state) {
   return NULL;
 }
 
-static char **lua5g_completion (const char *text, int start, int end) {
+static char **dala_completion (const char *text, int start, int end) {
   (void)end;
   rl_attempted_completion_over = 1;
 
@@ -634,16 +634,16 @@ static char **lua5g_completion (const char *text, int start, int end) {
     }
   }
 
-  return rl_completion_matches(text, lua5g_completion_gen);
+  return rl_completion_matches(text, dala_completion_gen);
 }
 
-static void lua5g_initreadline (lua_State *L) {
-  rl_readline_name = "lua5g";
+static void dala_initreadline (lua_State *L) {
+  rl_readline_name = "dala";
   completion_L = L;
-  rl_attempted_completion_function = lua5g_completion;
+  rl_attempted_completion_function = dala_completion;
 }
 
-#define lua_initreadline(L)	lua5g_initreadline(L)
+#define lua_initreadline(L)	dala_initreadline(L)
 #define lua_readline(buff,prompt)	((void)buff, readline(prompt))
 #define lua_saveline(line)	add_history(line)
 #define lua_freeline(line)	free(line)
@@ -913,9 +913,9 @@ static int pmain (lua_State *L) {
   }
   /* apply type mode */
   if (args & (1 << 8))  /* --strict */
-    G(L)->typemode = LUA5G_MODE_STRICT;
+    G(L)->typemode = DALA_MODE_STRICT;
   else if (args & (1 << 9))  /* --legacy */
-    G(L)->typemode = LUA5G_MODE_LEGACY;
+    G(L)->typemode = DALA_MODE_LEGACY;
   luai_openlibs(L);  /* open standard libraries */
   createargtable(L, argv, argc, script);  /* create table 'arg' */
   lua_gc(L, LUA_GCRESTART);  /* start GC... */

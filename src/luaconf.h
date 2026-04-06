@@ -558,14 +558,14 @@
 /* #define LUA_CLASS_RELEASE */
 
 /*
-@@ LUA5G type checking modes:
+@@ DALA type checking modes:
 ** DEFAULT (0): type annotations optional (gradual typing)
 ** STRICT  (1): all local variables must have type annotations
 ** LEGACY  (2): type annotations parsed but never checked at runtime
 */
-#define LUA5G_MODE_DEFAULT  0
-#define LUA5G_MODE_STRICT   1
-#define LUA5G_MODE_LEGACY   2
+#define DALA_MODE_DEFAULT  0
+#define DALA_MODE_STRICT   1
+#define DALA_MODE_LEGACY   2
 
 
 #endif
