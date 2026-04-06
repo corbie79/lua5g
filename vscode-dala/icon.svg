@@ -1,76 +1,68 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Golden full moon -->
+  <circle cx="256" cy="256" r="240" fill="#F5C131"/>
+  <circle cx="256" cy="256" r="240" fill="url(#moonShade)"/>
   <defs>
-    <!-- Moon glow -->
-    <radialGradient id="moonGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#FFF8DC"/>
-      <stop offset="70%" stop-color="#FFE4A0"/>
-      <stop offset="100%" stop-color="#F5C842"/>
-    </radialGradient>
-    <!-- Shadow gradient for rabbits -->
-    <radialGradient id="shadowGrad" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#D4A030" stop-opacity="0.8"/>
-      <stop offset="100%" stop-color="#C8941E" stop-opacity="0.6"/>
+    <radialGradient id="moonShade" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#FFDC4A" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#E8A817" stop-opacity="1"/>
     </radialGradient>
   </defs>
 
-  <!-- Night sky background (transparent for icon use) -->
+  <!-- All silhouettes in solid black -->
+  <g fill="#1A1A1A">
 
-  <!-- Full moon -->
-  <circle cx="256" cy="256" r="230" fill="url(#moonGlow)" stroke="#E8B830" stroke-width="3"/>
+    <!-- Mortar (절구) - wide bowl shape -->
+    <path d="M218 360 Q220 310 256 305 Q292 310 294 360 Q292 375 256 378 Q220 375 218 360 Z"/>
+    <!-- Mortar rim -->
+    <ellipse cx="256" cy="308" rx="42" ry="12"/>
+    <!-- Mortar base -->
+    <ellipse cx="256" cy="375" rx="32" ry="8"/>
 
-  <!-- Moon craters (subtle) -->
-  <circle cx="180" cy="160" r="25" fill="#EDD98A" opacity="0.4"/>
-  <circle cx="340" cy="200" r="18" fill="#EDD98A" opacity="0.3"/>
-  <circle cx="200" cy="340" r="20" fill="#EDD98A" opacity="0.35"/>
-  <circle cx="310" cy="320" r="12" fill="#EDD98A" opacity="0.25"/>
-  <circle cx="150" cy="260" r="15" fill="#EDD98A" opacity="0.3"/>
+    <!-- Pestle (절구공이) - held by both rabbits, angled -->
+    <rect x="252" y="190" width="8" height="130" rx="4" transform="rotate(-5 256 255)"/>
+    <!-- Pestle head -->
+    <ellipse cx="253" cy="188" rx="12" ry="8" transform="rotate(-5 253 188)"/>
 
-  <!-- Mortar (절구) - center bottom -->
-  <ellipse cx="256" cy="340" rx="50" ry="20" fill="#8B6914" opacity="0.7"/>
-  <path d="M206 340 L216 280 L296 280 L306 340 Z" fill="#A07818" opacity="0.65"/>
-  <ellipse cx="256" cy="280" rx="40" ry="15" fill="#B8892A" opacity="0.6"/>
-
-  <!-- Pestle (절구공이) - diagonal -->
-  <line x1="230" y1="230" x2="285" y2="310" stroke="#8B6914" stroke-width="8" stroke-linecap="round" opacity="0.65"/>
-  <circle cx="228" cy="228" r="8" fill="#8B6914" opacity="0.65"/>
-
-  <!-- Left rabbit silhouette -->
-  <g fill="#C8941E" opacity="0.6" transform="translate(-30, -10)">
+    <!-- === Left rabbit === -->
     <!-- Body -->
-    <ellipse cx="210" cy="300" rx="30" ry="25"/>
+    <ellipse cx="175" cy="340" rx="38" ry="30"/>
     <!-- Head -->
-    <circle cx="200" cy="265" r="18"/>
-    <!-- Left ear -->
-    <ellipse cx="188" cy="228" rx="6" ry="22" transform="rotate(-15 188 228)"/>
+    <circle cx="160" cy="295" r="22"/>
+    <!-- Left ear (long, upright) -->
+    <ellipse cx="148" cy="245" rx="7" ry="30" transform="rotate(-10 148 245)"/>
     <!-- Right ear -->
-    <ellipse cx="205" cy="225" rx="6" ry="24" transform="rotate(5 205 225)"/>
-    <!-- Front arm (reaching to pestle) -->
-    <ellipse cx="230" cy="285" rx="18" ry="7" transform="rotate(-30 230 285)"/>
-    <!-- Back leg -->
-    <ellipse cx="190" cy="318" rx="12" ry="8"/>
+    <ellipse cx="168" cy="242" rx="7" ry="32" transform="rotate(5 168 242)"/>
+    <!-- Eye (negative space) -->
+    <circle cx="155" cy="290" r="3" fill="#F5C131"/>
+    <!-- Front arm reaching to pestle -->
+    <path d="M178 315 Q200 295 240 280 Q242 285 238 290 Q205 300 185 325 Z"/>
+    <!-- Back arm -->
+    <ellipse cx="155" cy="330" rx="8" ry="15" transform="rotate(20 155 330)"/>
+    <!-- Feet -->
+    <ellipse cx="160" cy="370" rx="15" ry="8"/>
     <!-- Tail -->
-    <circle cx="240" cy="305" r="6"/>
-  </g>
+    <circle cx="210" cy="350" r="8"/>
 
-  <!-- Right rabbit silhouette -->
-  <g fill="#C8941E" opacity="0.6" transform="translate(30, -10)">
+    <!-- === Right rabbit === -->
     <!-- Body -->
-    <ellipse cx="302" cy="300" rx="30" ry="25"/>
+    <ellipse cx="337" cy="340" rx="38" ry="30"/>
     <!-- Head -->
-    <circle cx="312" cy="265" r="18"/>
+    <circle cx="352" cy="295" r="22"/>
     <!-- Left ear -->
-    <ellipse cx="305" cy="225" rx="6" ry="24" transform="rotate(-5 305 225)"/>
-    <!-- Right ear -->
-    <ellipse cx="322" cy="228" rx="6" ry="22" transform="rotate(15 322 228)"/>
-    <!-- Front arm (reaching to pestle) -->
-    <ellipse cx="282" cy="285" rx="18" ry="7" transform="rotate(30 282 285)"/>
-    <!-- Back leg -->
-    <ellipse cx="322" cy="318" rx="12" ry="8"/>
+    <ellipse cx="344" cy="242" rx="7" ry="32" transform="rotate(-5 344 242)"/>
+    <!-- Right ear (long, upright) -->
+    <ellipse cx="364" cy="245" rx="7" ry="30" transform="rotate(10 364 245)"/>
+    <!-- Eye (negative space) -->
+    <circle cx="357" cy="290" r="3" fill="#F5C131"/>
+    <!-- Front arm reaching to pestle -->
+    <path d="M334 315 Q312 295 272 280 Q270 285 274 290 Q307 300 327 325 Z"/>
+    <!-- Back arm -->
+    <ellipse cx="357" cy="330" rx="8" ry="15" transform="rotate(-20 357 330)"/>
+    <!-- Feet -->
+    <ellipse cx="352" cy="370" rx="15" ry="8"/>
     <!-- Tail -->
-    <circle cx="272" cy="305" r="6"/>
-  </g>
+    <circle cx="302" cy="350" r="8"/>
 
-  <!-- "DALA" text at bottom -->
-  <text x="256" y="460" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="bold" font-size="52" fill="#F5C842" letter-spacing="8">DALA</text>
-  <text x="256" y="490" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="18" fill="#E8B830" letter-spacing="2">달아</text>
+  </g>
 </svg>
