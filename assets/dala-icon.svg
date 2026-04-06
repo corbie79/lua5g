@@ -1,68 +1,140 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <!-- Golden full moon -->
-  <circle cx="256" cy="256" r="240" fill="#F5C131"/>
-  <circle cx="256" cy="256" r="240" fill="url(#moonShade)"/>
   <defs>
-    <radialGradient id="moonShade" cx="40%" cy="35%" r="60%">
-      <stop offset="0%" stop-color="#FFDC4A" stop-opacity="1"/>
-      <stop offset="100%" stop-color="#E8A817" stop-opacity="1"/>
+    <radialGradient id="moonGlow" cx="40%" cy="35%" r="60%">
+      <stop offset="0%" stop-color="#FFF3B0"/>
+      <stop offset="50%" stop-color="#FFD93D"/>
+      <stop offset="100%" stop-color="#F0A500"/>
+    </radialGradient>
+    <radialGradient id="blushL" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FF9999" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#FF9999" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="blushR" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FF9999" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#FF9999" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
-  <!-- All silhouettes in solid black -->
-  <g fill="#1A1A1A">
+  <!-- Golden full moon background -->
+  <circle cx="256" cy="256" r="240" fill="url(#moonGlow)"/>
+  <!-- Subtle crater marks for moon texture -->
+  <circle cx="340" cy="180" r="18" fill="#F0C030" opacity="0.3"/>
+  <circle cx="150" cy="380" r="12" fill="#F0C030" opacity="0.25"/>
+  <circle cx="380" cy="350" r="10" fill="#F0C030" opacity="0.2"/>
 
-    <!-- Mortar (절구) - wide bowl shape -->
-    <path d="M218 360 Q220 310 256 305 Q292 310 294 360 Q292 375 256 378 Q220 375 218 360 Z"/>
-    <!-- Mortar rim -->
-    <ellipse cx="256" cy="308" rx="42" ry="12"/>
-    <!-- Mortar base -->
-    <ellipse cx="256" cy="375" rx="32" ry="8"/>
+  <!-- Mortar (절구) -->
+  <path d="M206 365 Q210 320 256 312 Q302 320 306 365 Q302 385 256 390 Q210 385 206 365 Z" fill="#8B6914"/>
+  <ellipse cx="256" cy="316" rx="50" ry="14" fill="#A07818"/>
+  <ellipse cx="256" cy="316" rx="42" ry="10" fill="#6B4E10"/>
+  <ellipse cx="256" cy="387" rx="36" ry="9" fill="#6B4E10"/>
 
-    <!-- Pestle (절구공이) - held by both rabbits, angled -->
-    <rect x="252" y="190" width="8" height="130" rx="4" transform="rotate(-5 256 255)"/>
-    <!-- Pestle head -->
-    <ellipse cx="253" cy="188" rx="12" ry="8" transform="rotate(-5 253 188)"/>
+  <!-- Pestle -->
+  <rect x="251" y="195" width="10" height="125" rx="5" fill="#8B6914" transform="rotate(-5 256 258)"/>
+  <ellipse cx="253" cy="193" rx="14" ry="10" fill="#A07818" transform="rotate(-5 253 193)"/>
 
-    <!-- === Left rabbit === -->
-    <!-- Body -->
-    <ellipse cx="175" cy="340" rx="38" ry="30"/>
-    <!-- Head -->
-    <circle cx="160" cy="295" r="22"/>
-    <!-- Left ear (long, upright) -->
-    <ellipse cx="148" cy="245" rx="7" ry="30" transform="rotate(-10 148 245)"/>
-    <!-- Right ear -->
-    <ellipse cx="168" cy="242" rx="7" ry="32" transform="rotate(5 168 242)"/>
-    <!-- Eye (negative space) -->
-    <circle cx="155" cy="290" r="3" fill="#F5C131"/>
+  <!-- ======= Left rabbit ======= -->
+  <g>
+    <!-- Body (round and chubby) -->
+    <ellipse cx="170" cy="345" rx="44" ry="36" fill="white"/>
+    <ellipse cx="170" cy="345" rx="44" ry="36" fill="#FAFAFA"/>
+    <!-- Tummy -->
+    <ellipse cx="175" cy="350" rx="25" ry="22" fill="#F0F0F0"/>
+
+    <!-- Head (big and round for cuteness) -->
+    <circle cx="155" cy="288" r="32" fill="white"/>
+
+    <!-- Inner ears (pink!) -->
+    <ellipse cx="136" cy="232" rx="8" ry="32" transform="rotate(-12 136 232)" fill="white"/>
+    <ellipse cx="136" cy="234" rx="5" ry="24" transform="rotate(-12 136 234)" fill="#FFB6C1"/>
+    <ellipse cx="162" cy="228" rx="8" ry="34" transform="rotate(5 162 228)" fill="white"/>
+    <ellipse cx="162" cy="230" rx="5" ry="26" transform="rotate(5 162 230)" fill="#FFB6C1"/>
+
+    <!-- Eyes (big sparkly kawaii eyes) -->
+    <circle cx="145" cy="283" r="6" fill="#2C2C2C"/>
+    <circle cx="143" cy="280" r="2.5" fill="white"/>
+    <circle cx="147" cy="285" r="1.2" fill="white"/>
+
+    <!-- Cute little nose -->
+    <ellipse cx="155" cy="296" rx="3" ry="2" fill="#FFB6C1"/>
+
+    <!-- Mouth (tiny smile) -->
+    <path d="M151 300 Q155 305 159 300" fill="none" stroke="#E0A0A0" stroke-width="1.2" stroke-linecap="round"/>
+
+    <!-- Blush cheeks -->
+    <circle cx="138" cy="295" r="8" fill="url(#blushL)"/>
+
     <!-- Front arm reaching to pestle -->
-    <path d="M178 315 Q200 295 240 280 Q242 285 238 290 Q205 300 185 325 Z"/>
-    <!-- Back arm -->
-    <ellipse cx="155" cy="330" rx="8" ry="15" transform="rotate(20 155 330)"/>
-    <!-- Feet -->
-    <ellipse cx="160" cy="370" rx="15" ry="8"/>
-    <!-- Tail -->
-    <circle cx="210" cy="350" r="8"/>
+    <path d="M185 320 Q205 298 240 285 Q243 292 238 296 Q208 308 192 332 Z" fill="white"/>
+    <!-- Paw pad -->
+    <circle cx="240" cy="289" r="5" fill="#FFB6C1" opacity="0.6"/>
 
-    <!-- === Right rabbit === -->
-    <!-- Body -->
-    <ellipse cx="337" cy="340" rx="38" ry="30"/>
+    <!-- Feet (round paws) -->
+    <ellipse cx="152" cy="378" rx="16" ry="10" fill="white"/>
+    <ellipse cx="185" cy="376" rx="14" ry="9" fill="white"/>
+    <!-- Toe beans! -->
+    <circle cx="148" cy="376" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="155" cy="375" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="182" cy="374" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="188" cy="374" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+
+    <!-- Fluffy tail -->
+    <circle cx="212" cy="348" r="12" fill="white"/>
+  </g>
+
+  <!-- ======= Right rabbit ======= -->
+  <g>
+    <!-- Body (round and chubby) -->
+    <ellipse cx="342" cy="345" rx="44" ry="36" fill="white"/>
+    <ellipse cx="342" cy="345" rx="44" ry="36" fill="#FAFAFA"/>
+    <!-- Tummy -->
+    <ellipse cx="337" cy="350" rx="25" ry="22" fill="#F0F0F0"/>
+
     <!-- Head -->
-    <circle cx="352" cy="295" r="22"/>
-    <!-- Left ear -->
-    <ellipse cx="344" cy="242" rx="7" ry="32" transform="rotate(-5 344 242)"/>
-    <!-- Right ear (long, upright) -->
-    <ellipse cx="364" cy="245" rx="7" ry="30" transform="rotate(10 364 245)"/>
-    <!-- Eye (negative space) -->
-    <circle cx="357" cy="290" r="3" fill="#F5C131"/>
-    <!-- Front arm reaching to pestle -->
-    <path d="M334 315 Q312 295 272 280 Q270 285 274 290 Q307 300 327 325 Z"/>
-    <!-- Back arm -->
-    <ellipse cx="357" cy="330" rx="8" ry="15" transform="rotate(-20 357 330)"/>
-    <!-- Feet -->
-    <ellipse cx="352" cy="370" rx="15" ry="8"/>
-    <!-- Tail -->
-    <circle cx="302" cy="350" r="8"/>
+    <circle cx="357" cy="288" r="32" fill="white"/>
 
+    <!-- Inner ears (pink!) -->
+    <ellipse cx="350" cy="228" rx="8" ry="34" transform="rotate(-5 350 228)" fill="white"/>
+    <ellipse cx="350" cy="230" rx="5" ry="26" transform="rotate(-5 350 230)" fill="#FFB6C1"/>
+    <ellipse cx="376" cy="232" rx="8" ry="32" transform="rotate(12 376 232)" fill="white"/>
+    <ellipse cx="376" cy="234" rx="5" ry="24" transform="rotate(12 376 234)" fill="#FFB6C1"/>
+
+    <!-- Eyes -->
+    <circle cx="367" cy="283" r="6" fill="#2C2C2C"/>
+    <circle cx="365" cy="280" r="2.5" fill="white"/>
+    <circle cx="369" cy="285" r="1.2" fill="white"/>
+
+    <!-- Cute little nose -->
+    <ellipse cx="357" cy="296" rx="3" ry="2" fill="#FFB6C1"/>
+
+    <!-- Mouth -->
+    <path d="M353 300 Q357 305 361 300" fill="none" stroke="#E0A0A0" stroke-width="1.2" stroke-linecap="round"/>
+
+    <!-- Blush cheeks -->
+    <circle cx="374" cy="295" r="8" fill="url(#blushR)"/>
+
+    <!-- Front arm reaching to pestle -->
+    <path d="M327 320 Q307 298 272 285 Q269 292 274 296 Q304 308 320 332 Z" fill="white"/>
+    <!-- Paw pad -->
+    <circle cx="272" cy="289" r="5" fill="#FFB6C1" opacity="0.6"/>
+
+    <!-- Feet (round paws) -->
+    <ellipse cx="360" cy="378" rx="16" ry="10" fill="white"/>
+    <ellipse cx="327" cy="376" rx="14" ry="9" fill="white"/>
+    <!-- Toe beans! -->
+    <circle cx="364" cy="376" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="357" cy="375" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="330" cy="374" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+    <circle cx="324" cy="374" r="2.5" fill="#FFB6C1" opacity="0.5"/>
+
+    <!-- Fluffy tail -->
+    <circle cx="300" cy="348" r="12" fill="white"/>
+  </g>
+
+  <!-- Sparkle effects on moon -->
+  <g fill="white" opacity="0.7">
+    <polygon points="100,150 103,158 111,158 105,163 107,171 100,166 93,171 95,163 89,158 97,158" transform="scale(0.6) translate(60,80)"/>
+    <polygon points="400,120 402,126 408,126 403,130 405,136 400,132 395,136 397,130 392,126 398,126" transform="scale(0.5) translate(350,60)"/>
+    <circle cx="420" cy="145" r="2"/>
+    <circle cx="95" cy="170" r="1.5"/>
   </g>
 </svg>
