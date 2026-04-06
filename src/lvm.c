@@ -30,6 +30,7 @@
 #include "ltable.h"
 #include "ltm.h"
 #include "lvm.h"
+#include "ljit.h"
 
 
 /*
@@ -1851,6 +1852,44 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         savestate(L, ci);  /* in case of errors */
         if (forprep(L, ra))
           pc += GETARG_Bx(i) + 1;  /* skip the loop */
+        else if (cl->p->jit != NULL) {
+          /* JIT trace: select int or float path */
+          typedef int (*JitFunc)(void *);
+          JitTrace *trace = cl->p->jit;
+          void *jcode = NULL;
+          if (ttisinteger(s2v(ra + 1)) && trace->code)
+            jcode = trace->code;
+          else if (trace->fcode)
+            jcode = trace->fcode;
+          if (jcode) {
+            ((JitFunc)jcode)(ci->func.p + 1);
+            pc += GETARG_Bx(i) + 1;
+          }
+          /* else: no matching path, fall through to interpreter */
+        }
+        else {
+          /* Auto hot loop detection: try JIT after threshold */
+          Proto *p = cl->p;
+          if (p->hotcount < LUA_JIT_THRESHOLD)
+            p->hotcount++;
+          else if (p->hotcount == LUA_JIT_THRESHOLD) {
+            p->hotcount++;  /* only try once */
+            int curpc = pcRel(pc, p);  /* pc of this FORPREP */
+            int jres = luaJ_compile(L, p, curpc);
+            if (jres == JIT_OK && p->jit != NULL) {
+              typedef int (*JitFunc)(void *);
+              void *jcode = NULL;
+              if (ttisinteger(s2v(ra + 1)) && p->jit->code)
+                jcode = p->jit->code;
+              else if (p->jit->fcode)
+                jcode = p->jit->fcode;
+              if (jcode) {
+                ((JitFunc)jcode)(ci->func.p + 1);
+                pc += GETARG_Bx(i) + 1;
+              }
+            }
+          }
+        }
         vmbreak;
       }
       vmcase(OP_TFORPREP) {
@@ -1950,6 +1989,75 @@ void luaV_execute (lua_State *L, CallInfo *ci) {
         TValue *ra = vRA(i);
         if (!ttisnil(ra))
           halfProtect(luaG_errnnil(L, cl, GETARG_Bx(i)));
+        vmbreak;
+      }
+      vmcase(OP_TYPECHECK) {
+        /*  A B C -- B = type ID, C = K index for class name (if B==TYPEID_CLASS) */
+        TValue *ra = vRA(i);
+        int typeid = GETARG_B(i);
+        int match;
+        const char *expected;
+        switch (typeid) {
+          case TYPEID_ANY:
+          case TYPEID_UNKNOWN:
+            vmbreak;  /* no check needed - fast exit */
+          case TYPEID_NUMBER:
+            match = ttisnumber(ra); expected = "number"; break;
+          case TYPEID_STRING:
+            match = ttisstring(ra); expected = "string"; break;
+          case TYPEID_BOOLEAN:
+            match = ttisboolean(ra); expected = "boolean"; break;
+          case TYPEID_TABLE:
+            match = ttistable(ra); expected = "table"; break;
+          case TYPEID_FUNCTION:
+            match = ttisfunction(ra); expected = "function"; break;
+          case TYPEID_NIL:
+            match = ttisnil(ra); expected = "nil"; break;
+          case TYPEID_THREAD:
+            match = ttisthread(ra); expected = "thread"; break;
+          case TYPEID_USERDATA:
+            match = (ttisfulluserdata(ra) || ttislightuserdata(ra));
+            expected = "userdata"; break;
+          case TYPEID_CLASS: {
+            /* Class instance check via metatable chain */
+            TValue *typek = k + GETARG_C(i);
+            TString *tname = tsvalue(typek);
+            expected = getstr(tname);
+            match = 0;
+            TValue classval;
+            TValue *env = cl->upvals[0]->v.p;
+            if (ttistable(env)) {
+              lu_byte tag = luaH_getshortstr(hvalue(env), tname, &classval);
+              if (!tagisempty(tag) && ttistable(&classval) && ttistable(ra)) {
+                Table *cls = hvalue(&classval);
+                Table *cur = hvalue(ra)->metatable;
+                int depth = 0;
+                while (cur != NULL && depth < 20) {
+                  if (cur == cls) { match = 1; break; }
+                  Table *curmt = cur->metatable;
+                  if (curmt != NULL) {
+                    TValue idx;
+                    lu_byte itag = luaH_getshortstr(curmt,
+                                      G(L)->tmname[TM_INDEX], &idx);
+                    if (!tagisempty(itag) && ttistable(&idx))
+                      cur = hvalue(&idx);
+                    else break;
+                  }
+                  else break;
+                  depth++;
+                }
+              }
+              else if (tagisempty(tag))
+                match = 1;  /* class not found: allow */
+            }
+            else match = 1;
+            break;
+          }
+          default:
+            match = 1; expected = "?"; break;
+        }
+        if (!match && !ttisnil(ra))
+          halfProtect(luaG_typecheckerror(L, ra, expected, GETARG_A(i)));
         vmbreak;
       }
       vmcase(OP_VARARGPREP) {

@@ -814,6 +814,25 @@ l_noret luaG_ordererror (lua_State *L, const TValue *p1, const TValue *p2) {
 }
 
 
+l_noret luaG_typecheckerror (lua_State *L, const TValue *val,
+                            const char *expected_type, int reg) {
+  CallInfo *ci = L->ci;
+  const char *actual_type = luaT_objtypename(L, val);
+  const char *varname = NULL;
+  if (isLua(ci)) {
+    const Proto *p = ci_func(ci)->p;
+    int pc = currentpc(ci);
+    varname = luaF_getlocalname(p, reg + 1, pc);
+  }
+  if (varname)
+    luaG_runerror(L, "type error: '%s' expected for variable '%s', got '%s'",
+                  expected_type, varname, actual_type);
+  else
+    luaG_runerror(L, "type error: '%s' expected, got '%s'",
+                  expected_type, actual_type);
+}
+
+
 l_noret luaG_errnnil (lua_State *L, LClosure *cl, int k) {
   const char *globalname = "?";  /* default name if k == 0 */
   if (k > 0)

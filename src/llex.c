@@ -43,10 +43,10 @@
 
 /* ORDER RESERVED */
 static const char *const luaX_tokens [] = {
-    "and", "break", "class", "do", "else", "elseif",
-    "end", "extends", "false", "for", "function",
-    "global", "goto", "if",
-    "in", "local", "nil", "not", "or", "repeat",
+    "and", "break", "do", "else", "elseif",
+    "end", "false", "for", "function",
+    "global", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat",
     "return", "then", "true", "until", "while",
     "//", "..", "...", "==", ">=", "<=", "~=",
     "<<", ">>", "::", "<eof>",
@@ -194,7 +194,33 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->glbn = luaS_newliteral(L, "global");  /* get "global" string */
   ls->glbn->extra = 0;  /* mark it as not reserved */
 #endif
-  ls->typn = luaS_newliteral(L, "type");  /* get "type" string */
+  ls->typn = luaS_newliteral(L, "type");
+  ls->matchn = luaS_newliteral(L, "match");
+  ls->enumin = luaS_newliteral(L, "enum");
+  ls->importn = luaS_newliteral(L, "import");
+  ls->classn = luaS_newliteral(L, "class");
+  ls->extendsn = luaS_newliteral(L, "extends");
+  ls->implementsn = luaS_newliteral(L, "implements");
+  ls->interfacen = luaS_newliteral(L, "interface");
+  ls->tryn = luaS_newliteral(L, "try");
+  ls->classnames = NULL;
+  ls->nclasses = 0;
+  ls->classnames_size = 0;
+  ls->classfields = NULL;
+  ls->nclassfields = 0;
+  ls->classfields_size = 0;
+  ls->classmethods = NULL;
+  ls->nclassmethods = 0;
+  ls->classmethods_size = 0;
+  ls->classparents = NULL;
+  ls->nclassparents = 0;
+  ls->classparents_size = 0;
+  ls->interfaces = NULL;
+  ls->ninterfaces = 0;
+  ls->interfaces_size = 0;
+  ls->enums = NULL;
+  ls->nenums = 0;
+  ls->enums_size = 0;
   luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
 }
 
@@ -569,7 +595,9 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           /* find or create string */
           ts = luaS_newlstr(ls->L, luaZ_buffer(ls->buff),
                                    luaZ_bufflen(ls->buff));
-          if (isreserved(ts))   /* reserved word? */
+          if (isreserved(ts)   /* reserved word? */
+              && ls->t.token != '.'  /* but not after '.' */
+              && ls->t.token != ':') /* or ':' */
             return ts->extra - 1 + FIRST_RESERVED;
           else {
             seminfo->ts = anchorstr(ls, ts);

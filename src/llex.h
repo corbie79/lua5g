@@ -32,9 +32,10 @@
 enum RESERVED {
   /* terminal symbols denoted by reserved words */
   TK_AND = FIRST_RESERVED, TK_BREAK,
-  TK_CLASS, TK_DO, TK_ELSE, TK_ELSEIF, TK_END, TK_EXTENDS,
+  TK_DO, TK_ELSE, TK_ELSEIF, TK_END,
   TK_FALSE, TK_FOR, TK_FUNCTION,
-  TK_GLOBAL, TK_GOTO, TK_IF, TK_IN, TK_LOCAL, TK_NIL, TK_NOT, TK_OR,
+  TK_GLOBAL, TK_GOTO, TK_IF, TK_IN,
+  TK_LOCAL, TK_NIL, TK_NOT, TK_OR,
   TK_REPEAT, TK_RETURN, TK_THEN, TK_TRUE, TK_UNTIL, TK_WHILE,
   /* other terminal symbols */
   TK_IDIV, TK_CONCAT, TK_DOTS, TK_EQ, TK_GE, TK_LE, TK_NE,
@@ -79,6 +80,58 @@ typedef struct LexState {
   TString *brkn;  /* "break" name (used as a label) */
   TString *glbn;  /* "global" name (when not a reserved word) */
   TString *typn;  /* "type" name (for type alias statements) */
+  TString *matchn;     /* contextual keywords */
+  TString *enumin;
+  TString *importn;
+  TString *classn;
+  TString *extendsn;
+  TString *implementsn;
+  TString *interfacen;
+  TString *tryn;
+  /* class name registry for compile-time type validation */
+  TString **classnames;  /* array of declared class names */
+  int nclasses;  /* number of declared classes */
+  int classnames_size;  /* allocated size */
+  /* class field access info for compile-time access checking */
+  struct ClassFieldAccess {
+    TString *classname;
+    TString *fieldname;
+    lu_byte access;  /* 1=private, 2=protected, 3=readonly */
+  } *classfields;
+  int nclassfields;
+  int classfields_size;
+  /* class method registry for override checking */
+  struct ClassMethodInfo {
+    TString *classname;
+    TString *methodname;
+  } *classmethods;
+  int nclassmethods;
+  int classmethods_size;
+  /* class parent registry for override checking */
+  struct ClassParentInfo {
+    TString *classname;
+    TString *parentname;  /* NULL if no parent */
+  } *classparents;
+  int nclassparents;
+  int classparents_size;
+  /* interface registry for compile-time method checking */
+  struct InterfaceInfo {
+    TString *name;          /* interface name */
+    TString **methods;      /* array of required method names */
+    int nmethods;
+    int methods_size;
+  } *interfaces;
+  int ninterfaces;
+  int interfaces_size;
+  /* enum registry */
+  struct EnumInfo {
+    TString *name;          /* enum name */
+    TString **values;       /* array of enum value names */
+    int nvalues;
+    int values_size;
+  } *enums;
+  int nenums;
+  int enums_size;
 } LexState;
 
 

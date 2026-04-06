@@ -90,6 +90,7 @@ static void print_usage (const char *badoption) {
   lua_writestringerror(
   "usage: %s [options] [script [args]]\n"
   "Available options are:\n"
+  "  -d file   load declaration file (.d.lua)\n"
   "  -e stat   execute string 'stat'\n"
   "  -i        enter interactive mode after executing 'script'\n"
   "  -l mod    require library 'mod' into global 'mod'\n"
@@ -324,9 +325,10 @@ static int collectargs (char **argv, int *first) {
           return has_error;  /* invalid option */
         args |= has_v;
         break;
+      case 'd':  /* declaration file */
       case 'e':
         args |= has_e;  /* FALLTHROUGH */
-      case 'l':  /* both options need an argument */
+      case 'l':  /* options needing an argument */
         if (argv[i][2] == '\0') {  /* no concatenated argument? */
           i++;  /* try next 'argv' */
           if (argv[i] == NULL || argv[i][0] == '-')
@@ -354,9 +356,27 @@ static int runargs (lua_State *L, char **argv, int n) {
     int option = argv[i][1];
     lua_assert(argv[i][0] == '-');  /* already checked */
     switch (option) {
+      case 'd': {
+        /* load and execute declaration file (.d.lua)
+           This registers declared classes as globals (empty tables)
+           and populates the type registry for subsequent scripts. */
+        char *extra = argv[i] + 2;
+        if (*extra == '\0') extra = argv[++i];
+        lua_assert(extra != NULL);
+        int status = luaL_loadfilex(L, extra, "t");
+        if (status == LUA_OK)
+          status = lua_pcall(L, 0, 0, 0);  /* execute declarations */
+        if (status != LUA_OK) {
+          const char *msg = lua_tostring(L, -1);
+          l_message(progname, msg);
+          lua_pop(L, 1);
+          return 0;
+        }
+        break;
+      }
       case 'e':  case 'l': {
         int status;
-        char *extra = argv[i] + 2;  /* both options need an argument */
+        char *extra = argv[i] + 2;
         if (*extra == '\0') extra = argv[++i];
         lua_assert(extra != NULL);
         status = (option == 'e')
@@ -396,8 +416,8 @@ static int handle_luainit (lua_State *L) {
 */
 
 #if !defined(LUA_PROMPT)
-#define LUA_PROMPT		"> "
-#define LUA_PROMPT2		">> "
+#define LUA_PROMPT		"lua5g> "
+#define LUA_PROMPT2		"   ... "
 #endif
 
 #if !defined(LUA_MAXINPUT)
@@ -450,7 +470,168 @@ static int handle_luainit (lua_State *L) {
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#define lua_initreadline(L)	((void)L, rl_readline_name="lua")
+/* Lua5g REPL completion: keywords + globals + table fields */
+static lua_State *completion_L = NULL;
+
+static const char *lua5g_keywords[] = {
+  "and","break","class","do","else","elseif","end","enum","extends",
+  "false","for","function","global","goto","if","implements","in",
+  "interface","local","match","nil","not","or","repeat","return",
+  "then","true","try","until","while",
+  "override","super","static","abstract","operator","property",
+  "private","protected","public","readonly",
+  "import","type","declare","async","await",
+  "except","finally","case",
+  NULL
+};
+
+/* Pre-collected global names for completion */
+static char **global_names = NULL;
+static int global_count = 0;
+
+static void collect_globals (lua_State *L) {
+  /* free previous */
+  if (global_names) {
+    for (int i = 0; i < global_count; i++) free(global_names[i]);
+    free(global_names);
+  }
+  global_names = NULL;
+  global_count = 0;
+  int capacity = 256;
+  global_names = (char **)malloc(sizeof(char*) * (size_t)capacity);
+
+  lua_pushglobaltable(L);
+  lua_pushnil(L);
+  while (lua_next(L, -2) != 0) {
+    lua_pop(L, 1);  /* pop value */
+    if (lua_type(L, -1) == LUA_TSTRING) {
+      const char *name = lua_tostring(L, -1);
+      if (name[0] != '_' || name[1] != '_') {  /* skip __ internals */
+        if (global_count >= capacity) {
+          capacity *= 2;
+          global_names = (char **)realloc(global_names, sizeof(char*) * (size_t)capacity);
+        }
+        global_names[global_count++] = strdup(name);
+      }
+    }
+  }
+  lua_pop(L, 1);  /* pop _G */
+}
+
+/* Collect table field names for "table." completion */
+static char **field_names = NULL;
+static int field_count = 0;
+
+static void collect_fields (lua_State *L, const char *tablename) {
+  if (field_names) {
+    for (int i = 0; i < field_count; i++) free(field_names[i]);
+    free(field_names);
+  }
+  field_names = NULL;
+  field_count = 0;
+
+  /* get table from global */
+  lua_getglobal(L, tablename);
+  if (!lua_istable(L, -1)) { lua_pop(L, 1); return; }
+
+  int capacity = 64;
+  field_names = (char **)malloc(sizeof(char*) * (size_t)capacity);
+
+  lua_pushnil(L);
+  while (lua_next(L, -2) != 0) {
+    lua_pop(L, 1);
+    if (lua_type(L, -1) == LUA_TSTRING) {
+      const char *name = lua_tostring(L, -1);
+      if (field_count >= capacity) {
+        capacity *= 2;
+        field_names = (char **)realloc(field_names, sizeof(char*) * (size_t)capacity);
+      }
+      field_names[field_count++] = strdup(name);
+    }
+  }
+  lua_pop(L, 1);  /* pop table */
+}
+
+static char *lua5g_completion_gen (const char *text, int state) {
+  static int kw_idx, gl_idx, fl_idx;
+  static size_t len;
+  if (state == 0) { kw_idx = 0; gl_idx = 0; fl_idx = 0; len = strlen(text); }
+
+  /* field completion mode: "table.prefix" */
+  if (field_names) {
+    while (fl_idx < field_count) {
+      const char *f = field_names[fl_idx++];
+      if (strncmp(f, text, len) == 0)
+        return strdup(f);
+    }
+    return NULL;
+  }
+
+  /* keywords */
+  while (lua5g_keywords[kw_idx] != NULL) {
+    const char *kw = lua5g_keywords[kw_idx++];
+    if (strncmp(kw, text, len) == 0)
+      return strdup(kw);
+  }
+
+  /* globals */
+  while (gl_idx < global_count) {
+    const char *g = global_names[gl_idx++];
+    if (strncmp(g, text, len) == 0)
+      return strdup(g);
+  }
+
+  return NULL;
+}
+
+static char **lua5g_completion (const char *text, int start, int end) {
+  (void)end;
+  rl_attempted_completion_over = 1;
+
+  /* refresh globals before each completion */
+  if (completion_L) collect_globals(completion_L);
+
+  /* check if completing after '.' or ':' (table field completion) */
+  if (field_names) {
+    for (int i = 0; i < field_count; i++) free(field_names[i]);
+    free(field_names);
+    field_names = NULL;
+    field_count = 0;
+  }
+
+  if (start > 0 && completion_L) {
+    const char *line = rl_line_buffer;
+    /* find the '.' or ':' before cursor */
+    int dot = start - 1;
+    if (dot >= 0 && (line[dot] == '.' || line[dot] == ':')) {
+      /* extract table name before dot */
+      int ts = dot - 1;
+      while (ts >= 0 && (line[ts] == '_' || (line[ts] >= 'a' && line[ts] <= 'z') ||
+             (line[ts] >= 'A' && line[ts] <= 'Z') ||
+             (line[ts] >= '0' && line[ts] <= '9'))) ts--;
+      ts++;
+      if (ts < dot) {
+        char tname[128];
+        int tlen = dot - ts;
+        if (tlen > 0 && tlen < 127) {
+          memcpy(tname, line + ts, (size_t)tlen);
+          tname[tlen] = '\0';
+          collect_fields(completion_L, tname);
+        }
+      }
+    }
+  }
+
+  return rl_completion_matches(text, lua5g_completion_gen);
+}
+
+static void lua5g_initreadline (lua_State *L) {
+  rl_readline_name = "lua5g";
+  completion_L = L;
+  rl_attempted_completion_function = lua5g_completion;
+}
+
+#define lua_initreadline(L)	lua5g_initreadline(L)
 #define lua_readline(buff,prompt)	((void)buff, readline(prompt))
 #define lua_saveline(line)	add_history(line)
 #define lua_freeline(line)	free(line)

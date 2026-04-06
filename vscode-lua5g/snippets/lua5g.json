@@ -1,0 +1,127 @@
+{
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:ClassName}",
+      "  function new(self${2:, args})",
+      "    local inst = setmetatable({}, self)",
+      "    $0",
+      "    return inst",
+      "  end",
+      "end"
+    ],
+    "description": "Lua5g class declaration"
+  },
+  "Class Extends": {
+    "prefix": "classext",
+    "body": [
+      "class ${1:Child} extends ${2:Parent}",
+      "  function new(self${3:, args})",
+      "    local inst = setmetatable({}, self)",
+      "    $0",
+      "    return inst",
+      "  end",
+      "end"
+    ],
+    "description": "Lua5g class with inheritance"
+  },
+  "Interface": {
+    "prefix": "interface",
+    "body": [
+      "interface ${1:Name}",
+      "  function ${2:method}(self${3:}): ${4:nil}",
+      "end"
+    ],
+    "description": "Lua5g interface declaration"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name}",
+      "  ${2:VALUE1}",
+      "  ${3:VALUE2}",
+      "end"
+    ],
+    "description": "Lua5g enum declaration"
+  },
+  "Try/Except": {
+    "prefix": "try",
+    "body": [
+      "try",
+      "  $1",
+      "except ${2:err} then",
+      "  print(\"Error:\", ${2:err})",
+      "finally",
+      "  $0",
+      "end"
+    ],
+    "description": "Try/except/finally block"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value}",
+      "  case ${2:1} then $3",
+      "  case ${4:2} then $5",
+      "  case _ then $0",
+      "end"
+    ],
+    "description": "Pattern matching"
+  },
+  "Lambda": {
+    "prefix": "lambda",
+    "body": "|${1:x}| ${2:x * 2}",
+    "description": "Lambda expression"
+  },
+  "F-String": {
+    "prefix": "fstr",
+    "body": "f\"${1:hello {name}}\"",
+    "description": "String interpolation"
+  },
+  "Property": {
+    "prefix": "property",
+    "body": [
+      "property ${1:name}: ${2:number}",
+      "  get(self) return self._${1:name} end",
+      "  set(self, val) self._${1:name} = val end",
+      "end"
+    ],
+    "description": "Property with getter/setter"
+  },
+  "Test Describe": {
+    "prefix": "describe",
+    "body": [
+      "local test = require(\"test\")",
+      "",
+      "test.describe(\"${1:Module}\", function()",
+      "  test.it(\"${2:should work}\", function()",
+      "    test.expect(${3:1 + 1}).toBe(${4:2})",
+      "  end)",
+      "end)",
+      "",
+      "test.summary()"
+    ],
+    "description": "Test suite with describe/it/expect"
+  },
+  "Profile": {
+    "prefix": "profile",
+    "body": [
+      "local profile = require(\"profile\")",
+      "profile.start()",
+      "$0",
+      "profile.stop()",
+      "profile.report()"
+    ],
+    "description": "Profile code block"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": "import \"${1:module}\"",
+    "description": "Import module"
+  },
+  "Typed Local": {
+    "prefix": "ltype",
+    "body": "local ${1:name}: ${2:number} = ${3:0}",
+    "description": "Typed local variable"
+  }
+}

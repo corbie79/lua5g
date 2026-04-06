@@ -104,6 +104,8 @@ static int doargs(int argc, char* argv[])
    dumping=0;
   else if (IS("-s"))			/* strip debug information */
    stripping=1;
+  else if (IS("-t"))			/* strip type info only */
+   stripping=2;
   else if (IS("-v"))			/* show version */
    ++version;
   else					/* unknown option */
@@ -655,6 +657,16 @@ static void PrintCode(const Proto* f)
 	printf(COMMENT);
 	if (bx==0) printf("?"); else PrintConstant(f,bx-1);
 	break;
+   case OP_TYPECHECK: {
+	static const char *const typenames[] = {
+	 "number","string","boolean","table","function",
+	 "nil","thread","userdata","any","unknown","class"};
+	printf("%d %d %d",a,b,c);
+	printf(COMMENT "check R[%d] is %s", a,
+	  (b <= 10) ? typenames[b] : "?");
+	if (b == 10) { printf(" "); PrintConstant(f,c); }
+	break;
+   }
    case OP_VARARGPREP:
 	printf("%d",a);
 	break;
@@ -711,8 +723,10 @@ static void PrintDebug(const Proto* f)
  printf("locals (%d) for %p:\n",n,VOID(f));
  for (i=0; i<n; i++)
  {
-  printf("\t%d\t%s\t%d\t%d\n",
-  i,getstr(f->locvars[i].varname),f->locvars[i].startpc+1,f->locvars[i].endpc+1);
+  printf("\t%d\t%s\t%s\t%d\t%d\n",
+  i,getstr(f->locvars[i].varname),
+  f->locvars[i].typename_ ? getstr(f->locvars[i].typename_) : "-",
+  f->locvars[i].startpc+1,f->locvars[i].endpc+1);
  }
  n=f->sizeupvalues;
  printf("upvalues (%d) for %p:\n",n,VOID(f));

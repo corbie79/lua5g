@@ -263,6 +263,8 @@ Proto *luaF_newproto (lua_State *L) {
   f->linedefined = 0;
   f->lastlinedefined = 0;
   f->source = NULL;
+  f->jit = NULL;
+  f->hotcount = 0;
   return f;
 }
 
@@ -307,6 +309,23 @@ const char *luaF_getlocalname (const Proto *f, int local_number, int pc) {
       local_number--;
       if (local_number == 0)
         return getstr(f->locvars[i].varname);
+    }
+  }
+  return NULL;  /* not found */
+}
+
+
+const char *luaF_getlocaltypename (const Proto *f, int local_number, int pc) {
+  int i;
+  for (i = 0; i<f->sizelocvars && f->locvars[i].startpc <= pc; i++) {
+    if (pc < f->locvars[i].endpc) {  /* is variable active? */
+      local_number--;
+      if (local_number == 0) {
+        if (f->locvars[i].typename_ != NULL)
+          return getstr(f->locvars[i].typename_);
+        else
+          return NULL;
+      }
     }
   }
   return NULL;  /* not found */

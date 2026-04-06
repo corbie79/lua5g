@@ -1200,3 +1200,491 @@ LUALIB_API void luaL_checkversion_ (lua_State *L, lua_Number ver, size_t sz) {
                   (LUAI_UACNUMBER)ver, (LUAI_UACNUMBER)v);
 }
 
+
+/* ============================================================ */
+/* Class binding API                                             */
+/* ============================================================ */
+
+
+/*
+** Runtime release mode flag. When non-zero, private/protected access
+** checks are skipped (readonly + getter/setter still enforced).
+** Controlled via __class_release(bool) from Lua, or LUA_CLASS_RELEASE
+** compile flag.
+*/
+#if defined(LUA_CLASS_RELEASE)
+static int class_release_mode = 1;
+#else
+static int class_release_mode = 0;
+#endif
+
+
+LUALIB_API void luaL_setclassrelease (lua_State *L, int mode) {
+  (void)L;
+  class_release_mode = mode;
+}
+
+
+LUALIB_API int luaL_getclassrelease (lua_State *L) {
+  (void)L;
+  return class_release_mode;
+}
+
+
+/*
+** Helper: get the registry key for a class name.
+** Class tables are stored in the registry as "class:ClassName"
+*/
+static const char *classregkey (lua_State *L, const char *name) {
+  lua_pushfstring(L, "class:%s", name);
+  const char *key = lua_tostring(L, -1);
+  return key;  /* note: string is on stack, caller must manage */
+}
+
+
+LUALIB_API void luaL_newclass (lua_State *L, const char *name,
+                                const luaL_Reg *methods) {
+  /* create class table */
+  lua_newtable(L);                            /* [class] */
+
+  /* set __index = class (self-referencing for method lookup) */
+  lua_pushvalue(L, -1);                       /* [class, class] */
+  lua_setfield(L, -2, "__index");             /* [class] */
+
+  /* set __name for nice error messages */
+  lua_pushstring(L, name);                    /* [class, name] */
+  lua_setfield(L, -2, "__name");              /* [class] */
+
+  /* add methods */
+  if (methods != NULL)
+    luaL_setfuncs(L, methods, 0);             /* [class] */
+
+  /* store in registry: registry["class:Name"] = class */
+  const char *key = classregkey(L, name);     /* [class, key] */
+  lua_pushvalue(L, -2);                       /* [class, key, class] */
+  lua_setfield(L, LUA_REGISTRYINDEX, key);    /* [class, key] */
+  lua_pop(L, 1);                              /* [class] */
+
+  /* also set as global: _G[name] = class */
+  lua_pushvalue(L, -1);                       /* [class, class] */
+  lua_setglobal(L, name);                     /* [class] */
+}
+
+
+LUALIB_API void luaL_newsubclass (lua_State *L, const char *name,
+                                   const char *parent,
+                                   const luaL_Reg *methods) {
+  /* create child class table */
+  lua_newtable(L);                            /* [child] */
+
+  /* set __index = child */
+  lua_pushvalue(L, -1);                       /* [child, child] */
+  lua_setfield(L, -2, "__index");             /* [child] */
+
+  /* set __name */
+  lua_pushstring(L, name);                    /* [child, name] */
+  lua_setfield(L, -2, "__name");              /* [child] */
+
+  /* set up inheritance: setmetatable(child, {__index = Parent}) */
+  lua_newtable(L);                            /* [child, mt] */
+  const char *pkey = classregkey(L, parent);  /* [child, mt, pkey] */
+  lua_getfield(L, LUA_REGISTRYINDEX, pkey);   /* [child, mt, pkey, parent] */
+  if (lua_isnil(L, -1))
+    luaL_error(L, "parent class '%s' not found", parent);
+  lua_remove(L, -2);                          /* [child, mt, parent] */
+  lua_setfield(L, -2, "__index");             /* [child, mt] */
+  lua_setmetatable(L, -2);                    /* [child] */
+
+  /* add methods */
+  if (methods != NULL)
+    luaL_setfuncs(L, methods, 0);             /* [child] */
+
+  /* store in registry */
+  const char *key = classregkey(L, name);     /* [child, key] */
+  lua_pushvalue(L, -2);                       /* [child, key, child] */
+  lua_setfield(L, LUA_REGISTRYINDEX, key);    /* [child, key] */
+  lua_pop(L, 1);                              /* [child] */
+
+  /* set as global */
+  lua_pushvalue(L, -1);                       /* [child, child] */
+  lua_setglobal(L, name);                     /* [child] */
+}
+
+
+LUALIB_API void luaL_pushinstance (lua_State *L, const char *classname) {
+  /* create instance table */
+  lua_newtable(L);                            /* [inst] */
+
+  /* get class from registry */
+  const char *key = classregkey(L, classname);/* [inst, key] */
+  lua_getfield(L, LUA_REGISTRYINDEX, key);    /* [inst, key, class] */
+  if (lua_isnil(L, -1))
+    luaL_error(L, "class '%s' not found", classname);
+  lua_remove(L, -2);                          /* [inst, class] */
+
+  /* setmetatable(inst, class) */
+  lua_setmetatable(L, -2);                    /* [inst] */
+}
+
+
+LUALIB_API int luaL_isinstance (lua_State *L, int idx, const char *classname) {
+  if (!lua_istable(L, idx))
+    return 0;
+
+  /* get class from registry */
+  const char *key = classregkey(L, classname);/* [key] */
+  lua_getfield(L, LUA_REGISTRYINDEX, key);    /* [key, class] */
+  lua_remove(L, -2);                          /* [class] */
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 0;  /* class not found */
+  }
+
+  /* walk metatable chain of value */
+  idx = lua_absindex(L, idx);
+  int found = 0;
+  int depth = 0;
+  if (!lua_getmetatable(L, idx)) {            /* [class, mt?] */
+    lua_pop(L, 1);  /* pop class */
+    return 0;
+  }
+  /* stack: [class, mt] */
+  while (!found && depth < 20) {
+    if (lua_rawequal(L, -1, -2)) {  /* mt == class? */
+      found = 1;
+      break;
+    }
+    /* get mt.__index */
+    if (lua_getfield(L, -1, "__index") == LUA_TTABLE) {
+      /* check if __index is the class */
+      if (lua_rawequal(L, -1, -3)) {
+        lua_pop(L, 1);  /* pop __index */
+        found = 1;
+        break;
+      }
+      /* check __index's metatable for further inheritance */
+      if (lua_getmetatable(L, -1)) {
+        lua_remove(L, -2);  /* remove old __index, keep new mt */
+        lua_remove(L, -2);  /* remove old mt */
+        /* stack: [class, new_mt] */
+      }
+      else {
+        lua_pop(L, 1);  /* pop __index */
+        break;
+      }
+    }
+    else {
+      lua_pop(L, 1);  /* pop non-table __index */
+      break;
+    }
+    depth++;
+  }
+  lua_pop(L, 2);  /* pop class and mt */
+  return found;
+}
+
+
+LUALIB_API void luaL_checkinstance (lua_State *L, int arg,
+                                    const char *classname) {
+  if (!luaL_isinstance(L, arg, classname))
+    luaL_typeerror(L, arg, classname);
+}
+
+
+/* ============================================================ */
+/* Class access control runtime                                  */
+/* ============================================================ */
+
+
+/*
+** Check if the function calling us (2 levels up) is a method of
+** the class at 'classidx'. Uses debug.getinfo to get the caller.
+*/
+/*
+** Check if caller is a class method using __methods weak set.
+** The __methods table is built by luaL_setupclass and maps
+** function -> true for all class methods, getters, and setters.
+** This gives O(1) lookup instead of iterating the class table.
+*/
+static int is_caller_method (lua_State *L, int classidx) {
+  /* release mode: skip expensive stack inspection, allow all access */
+  if (class_release_mode) return 1;
+
+  lua_Debug ar;
+  int level;
+  int top = lua_gettop(L);
+  classidx = lua_absindex(L, classidx);
+
+  /* get the __methods set (built by luaL_setupclass) */
+  if (lua_getfield(L, classidx, "__methods") != LUA_TTABLE) {
+    lua_settop(L, top);
+    return 0;
+  }
+  int methodsidx = lua_gettop(L);
+
+  for (level = 1; level <= 6; level++) {
+    if (!lua_getstack(L, level, &ar)) break;
+    if (!lua_getinfo(L, "f", &ar)) continue;
+    if (lua_iscfunction(L, -1)) {
+      lua_pop(L, 1);
+      continue;
+    }
+    /* O(1) lookup: check if function is in __methods */
+    lua_pushvalue(L, -1);  /* dup function as key */
+    if (lua_rawget(L, methodsidx) != LUA_TNIL) {
+      lua_settop(L, top);
+      return 1;
+    }
+    lua_pop(L, 2);  /* pop nil + function */
+  }
+  lua_settop(L, top);
+  return 0;
+}
+
+
+/*
+** __index handler for classes with access control.
+** Uses proxy pattern: instance's actual data is in rawget(self, "__data").
+** Upvalue 1 = class table
+** Args: self, key
+*/
+static int class_index_handler (lua_State *L) {
+  /* self = 1, key = 2, class = upvalue 1 */
+  int classidx = lua_upvalueindex(1);
+  const char *key = NULL;
+  if (lua_isstring(L, 2))
+    key = lua_tostring(L, 2);
+
+  /* allow access to __data itself (internal use) */
+  if (key != NULL && strcmp(key, "__data") == 0) {
+    lua_pushvalue(L, 2);
+    lua_rawget(L, 1);
+    return 1;
+  }
+
+  /* 1. Check getters */
+  if (lua_getfield(L, classidx, "__getters") == LUA_TTABLE) {
+    lua_pushvalue(L, 2);
+    if (lua_rawget(L, -2) == LUA_TFUNCTION) {
+      lua_pushvalue(L, 1);  /* self */
+      lua_call(L, 1, 1);
+      return 1;
+    }
+    lua_pop(L, 1);  /* pop nil */
+  }
+  lua_pop(L, 1);  /* pop __getters */
+
+  /* 2. Check access rules for private/protected */
+  if (key != NULL && lua_getfield(L, classidx, "__access") == LUA_TTABLE) {
+    lua_pushvalue(L, 2);
+    if (lua_rawget(L, -2) == LUA_TSTRING) {
+      const char *access = lua_tostring(L, -1);
+      if (strcmp(access, "private") == 0 || strcmp(access, "protected") == 0) {
+        if (!is_caller_method(L, classidx)) {
+          const char *a = access;
+          lua_pop(L, 2);
+          return luaL_error(L, "cannot access %s field '%s'", a, key);
+        }
+      }
+    }
+    lua_pop(L, 1);  /* pop access value */
+  }
+  lua_pop(L, 1);  /* pop __access */
+
+  /* 3. Look up in __data storage (where instance fields live) */
+  lua_pushliteral(L, "__data");
+  if (lua_rawget(L, 1) == LUA_TTABLE) {
+    lua_pushvalue(L, 2);
+    if (lua_rawget(L, -2) != LUA_TNIL) {
+      return 1;  /* found in __data */
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);  /* pop __data or nil */
+
+  /* 4. Look up in class table (methods etc) */
+  lua_pushvalue(L, 2);
+  if (lua_rawget(L, classidx) != LUA_TNIL)
+    return 1;
+  lua_pop(L, 1);
+
+  /* 5. Check parent class via metatable chain */
+  if (lua_getmetatable(L, classidx)) {
+    if (lua_getfield(L, -1, "__index") != LUA_TNIL) {
+      if (lua_istable(L, -1)) {
+        lua_pushvalue(L, 2);
+        lua_gettable(L, -2);
+        if (!lua_isnil(L, -1))
+          return 1;
+      }
+    }
+    lua_pop(L, 2);
+  }
+
+  lua_pushnil(L);
+  return 1;
+}
+
+
+/*
+** __newindex handler for classes with access control.
+** All field writes go to rawget(self, "__data") table.
+** Upvalue 1 = class table
+** Args: self, key, value
+*/
+static int class_newindex_handler (lua_State *L) {
+  /* self = 1, key = 2, value = 3, class = upvalue 1 */
+  int classidx = lua_upvalueindex(1);
+  const char *key = NULL;
+  if (lua_isstring(L, 2))
+    key = lua_tostring(L, 2);
+
+  /* allow setting __data directly (internal) */
+  if (key != NULL && strcmp(key, "__data") == 0) {
+    lua_pushvalue(L, 2);
+    lua_pushvalue(L, 3);
+    lua_rawset(L, 1);
+    return 0;
+  }
+
+  /* 1. Check setters */
+  if (lua_getfield(L, classidx, "__setters") == LUA_TTABLE) {
+    lua_pushvalue(L, 2);
+    if (lua_rawget(L, -2) == LUA_TFUNCTION) {
+      lua_pushvalue(L, 1);  /* self */
+      lua_pushvalue(L, 3);  /* value */
+      lua_call(L, 2, 0);
+      return 0;
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);  /* pop __setters */
+
+  /* 2. Check access rules */
+  if (key != NULL && lua_getfield(L, classidx, "__access") == LUA_TTABLE) {
+    lua_pushvalue(L, 2);
+    if (lua_rawget(L, -2) == LUA_TSTRING) {
+      const char *access = lua_tostring(L, -1);
+      if (strcmp(access, "readonly") == 0) {
+        /* readonly: allow first write, block subsequent */
+        lua_pushliteral(L, "__data");
+        if (lua_rawget(L, 1) == LUA_TTABLE) {
+          lua_pushvalue(L, 2);
+          if (lua_rawget(L, -2) != LUA_TNIL) {
+            /* already has a value - block unless method */
+            if (!is_caller_method(L, classidx)) {
+              lua_settop(L, 3);
+              return luaL_error(L, "cannot modify readonly field '%s'", key);
+            }
+          }
+          lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+      }
+      else if (strcmp(access, "private") == 0) {
+        if (!is_caller_method(L, classidx)) {
+          lua_settop(L, 3);
+          return luaL_error(L, "cannot access private field '%s'", key);
+        }
+      }
+      else if (strcmp(access, "protected") == 0) {
+        if (!is_caller_method(L, classidx)) {
+          lua_settop(L, 3);
+          return luaL_error(L, "cannot access protected field '%s'", key);
+        }
+      }
+    }
+    lua_pop(L, 1);  /* pop access value */
+  }
+  lua_pop(L, 1);  /* pop __access */
+
+  /* 3. Store in __data (create if needed) */
+  lua_pushliteral(L, "__data");
+  if (lua_rawget(L, 1) != LUA_TTABLE) {
+    lua_pop(L, 1);
+    lua_newtable(L);           /* new __data table */
+    lua_pushliteral(L, "__data");
+    lua_pushvalue(L, -2);
+    lua_rawset(L, 1);          /* self.__data = new table */
+  }
+  /* stack: [..., __data_table] */
+  lua_pushvalue(L, 2);  /* key */
+  lua_pushvalue(L, 3);  /* value */
+  lua_rawset(L, -3);    /* __data[key] = value */
+  lua_pop(L, 1);
+  return 0;
+}
+
+
+/*
+** Set up access control on a class table at the top of the stack.
+** Creates closure-based __index and __newindex metamethods.
+** Call this after setting __access, __getters, __setters on the class.
+*/
+LUALIB_API void luaL_setupclass (lua_State *L) {
+  /* stack: [class] */
+  int classidx = lua_gettop(L);
+
+  /* Build __methods weak set: {[func]=true, ...} for O(1) method lookup */
+  lua_newtable(L);  /* __methods table */
+
+  /* set weak keys metatable: {__mode = "k"} */
+  lua_newtable(L);
+  lua_pushliteral(L, "k");
+  lua_setfield(L, -2, "__mode");
+  lua_setmetatable(L, -2);
+
+  int methodsidx = lua_gettop(L);
+
+  /* collect all Lua functions from the class table */
+  lua_pushnil(L);
+  while (lua_next(L, classidx) != 0) {
+    if (lua_isfunction(L, -1) && !lua_iscfunction(L, -1)) {
+      lua_pushvalue(L, -1);     /* dup function */
+      lua_pushboolean(L, 1);
+      lua_rawset(L, methodsidx);  /* __methods[func] = true */
+    }
+    lua_pop(L, 1);  /* pop value, keep key */
+  }
+
+  /* also add getters and setters */
+  if (lua_getfield(L, classidx, "__getters") == LUA_TTABLE) {
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+      if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -1);
+        lua_pushboolean(L, 1);
+        lua_rawset(L, methodsidx);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+
+  if (lua_getfield(L, classidx, "__setters") == LUA_TTABLE) {
+    lua_pushnil(L);
+    while (lua_next(L, -2) != 0) {
+      if (lua_isfunction(L, -1)) {
+        lua_pushvalue(L, -1);
+        lua_pushboolean(L, 1);
+        lua_rawset(L, methodsidx);
+      }
+      lua_pop(L, 1);
+    }
+  }
+  lua_pop(L, 1);
+
+  /* store __methods on class */
+  lua_setfield(L, classidx, "__methods");
+
+  /* set __index = closure(class_index_handler, class) */
+  lua_pushvalue(L, classidx);
+  lua_pushcclosure(L, class_index_handler, 1);
+  lua_setfield(L, classidx, "__index");
+
+  /* set __newindex = closure(class_newindex_handler, class) */
+  lua_pushvalue(L, classidx);
+  lua_pushcclosure(L, class_newindex_handler, 1);
+  lua_setfield(L, classidx, "__newindex");
+}
+

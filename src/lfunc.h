@@ -60,6 +60,8 @@ LUAI_FUNC lu_mem luaF_protosize (Proto *p);
 LUAI_FUNC void luaF_freeproto (lua_State *L, Proto *f);
 LUAI_FUNC const char *luaF_getlocalname (const Proto *func, int local_number,
                                          int pc);
+LUAI_FUNC const char *luaF_getlocaltypename (const Proto *func,
+                                              int local_number, int pc);
 
 
 #endif

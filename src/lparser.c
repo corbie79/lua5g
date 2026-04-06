@@ -67,28 +67,253 @@ static void expr (LexState *ls, expdesc *v);
 
 /*
 ** =======================================================
-** Type annotation parsing (parsed and discarded)
+** Type annotation parsing and compile-time type checking
 ** =======================================================
 */
+
+
+/* built-in type names recognized by the type system */
+static const char *const builtin_types[] = {
+  "number", "string", "boolean", "table", "function",
+  "nil", "thread", "userdata", "any", "unknown", NULL
+};
+
+
+/*
+** Map type name to numeric TYPEID for OP_TYPECHECK fast path.
+** Returns -1 if not a built-in type (i.e., it's a class name).
+*/
+static int get_typeid (const char *typename_) {
+  if (strcmp(typename_, "number") == 0) return TYPEID_NUMBER;
+  if (strcmp(typename_, "string") == 0) return TYPEID_STRING;
+  if (strcmp(typename_, "boolean") == 0) return TYPEID_BOOLEAN;
+  if (strcmp(typename_, "table") == 0) return TYPEID_TABLE;
+  if (strcmp(typename_, "function") == 0) return TYPEID_FUNCTION;
+  if (strcmp(typename_, "nil") == 0) return TYPEID_NIL;
+  if (strcmp(typename_, "thread") == 0) return TYPEID_THREAD;
+  if (strcmp(typename_, "userdata") == 0) return TYPEID_USERDATA;
+  if (strcmp(typename_, "any") == 0) return TYPEID_ANY;
+  if (strcmp(typename_, "unknown") == 0) return TYPEID_UNKNOWN;
+  return -1;  /* class type */
+}
+
+
+/* access modifier codes */
+#define ACCESS_PRIVATE    1
+#define ACCESS_PROTECTED  2
+#define ACCESS_READONLY   3
+
+
+/*
+** Register a class field's access modifier for compile-time checking.
+*/
+static void register_classfield (LexState *ls, TString *classname,
+                                  TString *fieldname, lu_byte access) {
+  lua_State *L = ls->L;
+  if (ls->nclassfields >= ls->classfields_size) {
+    int newsize = (ls->classfields_size == 0) ? 16 : ls->classfields_size * 2;
+    ls->classfields = luaM_reallocvector(L, ls->classfields,
+                        ls->classfields_size, newsize,
+                        struct ClassFieldAccess);
+    ls->classfields_size = newsize;
+  }
+  struct ClassFieldAccess *cf = &ls->classfields[ls->nclassfields++];
+  cf->classname = classname;
+  cf->fieldname = fieldname;
+  cf->access = access;
+}
+
+
+/*
+** Check at compile time if accessing 'fieldname' on a variable of type
+** 'classname' is allowed from the current function context.
+** Returns 0 if OK, or the access code (1=private, 2=protected) if blocked.
+*/
+static int check_field_access (LexState *ls, TString *classname,
+                                TString *fieldname) {
+  int i;
+  FuncState *fs = ls->fs;
+  for (i = 0; i < ls->nclassfields; i++) {
+    struct ClassFieldAccess *cf = &ls->classfields[i];
+    if (cf->classname == classname && cf->fieldname == fieldname) {
+      if (cf->access == ACCESS_PRIVATE) {
+        /* private: only allowed inside methods of the same class */
+        if (fs->classctx != classname)
+          return ACCESS_PRIVATE;
+      }
+      else if (cf->access == ACCESS_PROTECTED) {
+        /* protected: allowed in same class or parent class methods */
+        /* (simplified: check if classctx is set and is the class or a parent) */
+        if (fs->classctx == NULL)
+          return ACCESS_PROTECTED;
+        /* if classctx == classname, OK */
+        if (fs->classctx != classname) {
+          /* check if classctx's parent chain includes classname */
+          /* for now, allow if any classctx is set (simplified) */
+          /* TODO: walk parent chain */
+        }
+      }
+      break;
+    }
+  }
+  return 0;  /* access OK */
+}
+
+
+/*
+** Register a class method for override checking.
+*/
+static void register_classmethod_info (LexState *ls, TString *classname,
+                                        TString *methodname) {
+  lua_State *L = ls->L;
+  if (ls->nclassmethods >= ls->classmethods_size) {
+    int newsize = (ls->classmethods_size == 0) ? 32 : ls->classmethods_size * 2;
+    ls->classmethods = luaM_reallocvector(L, ls->classmethods,
+                         ls->classmethods_size, newsize, struct ClassMethodInfo);
+    ls->classmethods_size = newsize;
+  }
+  ls->classmethods[ls->nclassmethods].classname = classname;
+  ls->classmethods[ls->nclassmethods].methodname = methodname;
+  ls->nclassmethods++;
+}
+
+static void register_classparent (LexState *ls, TString *classname,
+                                   TString *parentname) {
+  lua_State *L = ls->L;
+  if (ls->nclassparents >= ls->classparents_size) {
+    int newsize = (ls->classparents_size == 0) ? 8 : ls->classparents_size * 2;
+    ls->classparents = luaM_reallocvector(L, ls->classparents,
+                         ls->classparents_size, newsize, struct ClassParentInfo);
+    ls->classparents_size = newsize;
+  }
+  ls->classparents[ls->nclassparents].classname = classname;
+  ls->classparents[ls->nclassparents].parentname = parentname;
+  ls->nclassparents++;
+}
+
+/*
+** Check if a method name exists in a class or its parent chain.
+** Used for override validation.
+*/
+static int method_exists_in_parent (LexState *ls, TString *classname,
+                                     TString *methodname) {
+  /* find parent of classname */
+  TString *parent = NULL;
+  for (int i = 0; i < ls->nclassparents; i++) {
+    if (ls->classparents[i].classname == classname) {
+      parent = ls->classparents[i].parentname;
+      break;
+    }
+  }
+  if (parent == NULL) return 0;  /* no parent */
+  /* check if method exists in parent */
+  for (int i = 0; i < ls->nclassmethods; i++) {
+    if (ls->classmethods[i].classname == parent &&
+        ls->classmethods[i].methodname == methodname)
+      return 1;
+  }
+  /* check parent's parent recursively */
+  return method_exists_in_parent(ls, parent, methodname);
+}
+
+
+/*
+** Register a class name in the parser's class registry.
+*/
+static void register_classname (LexState *ls, TString *name) {
+  lua_State *L = ls->L;
+  if (ls->nclasses >= ls->classnames_size) {
+    int newsize = (ls->classnames_size == 0) ? 8 : ls->classnames_size * 2;
+    ls->classnames = (TString **)luaM_reallocvector(L, ls->classnames,
+                          ls->classnames_size, newsize, TString *);
+    ls->classnames_size = newsize;
+  }
+  ls->classnames[ls->nclasses++] = name;
+}
+
+
+/*
+** Check if a type name is valid (built-in type, declared class, or type alias).
+** Returns 1 if valid, 0 if unknown.
+*/
+static int is_valid_typename (LexState *ls, TString *name) {
+  const char *s = getstr(name);
+  int i;
+  /* check built-in types */
+  for (i = 0; builtin_types[i] != NULL; i++) {
+    if (strcmp(s, builtin_types[i]) == 0)
+      return 1;
+  }
+  /* check declared classes (from 'class' keyword) */
+  for (i = 0; i < ls->nclasses; i++) {
+    if (ls->classnames[i] == name)  /* pointer equality (interned strings) */
+      return 1;
+  }
+  /* check C-registered classes in registry (key = "class:Name") */
+  {
+    lua_State *L = ls->L;
+    lua_pushfstring(L, "class:%s", s);
+    lua_getfield(L, LUA_REGISTRYINDEX, lua_tostring(L, -1));
+    int found = !lua_isnil(L, -1);
+    lua_pop(L, 2);  /* pop key and value */
+    if (found) return 1;
+  }
+  return 0;
+}
+
+
+/*
+** Get the compile-time type of an expression kind.
+** Returns a string like "number", "string", etc., or NULL if unknown.
+*/
+static const char *expr_compiletime_type (expkind k) {
+  switch (k) {
+    case VKINT: case VKFLT: return "number";
+    case VKSTR: return "string";
+    case VTRUE: case VFALSE: return "boolean";
+    case VNIL: return "nil";
+    default: return NULL;  /* type not known at compile time */
+  }
+}
 
 
 /*
 ** Parse a type annotation after ':'. Consumes the ':' and the type name.
 ** Type syntax: NAME ['?'] | 'nil' | '{' ... '}'
-** Types are parsed but have no semantic effect (gradual typing).
+** Returns the base type name as a TString* (for simple types like
+** 'number', 'string', etc.) or NULL for complex types.
+** Types are checked at runtime via OP_TYPECHECK for basic types.
 */
-static void parse_type (LexState *ls) {
+static TString *parse_type (LexState *ls) {
   /* parse_type -> NAME ['?'] | 'nil' | 'function' | '{' ... '}' | '(' ... ')' */
+  TString *typename_ = NULL;
+  int nullable = 0;
   switch (ls->t.token) {
     case TK_NAME: {
+      typename_ = ls->t.seminfo.ts;  /* capture type name */
       luaX_next(ls);  /* skip type name (number, string, boolean, etc.) */
+      /* generic type parameters: Name<T, U, ...> (parsed, no runtime check) */
+      if (ls->t.token == '<') {
+        luaX_next(ls);  /* skip '<' */
+        parse_type(ls);  /* first type parameter */
+        while (ls->t.token == ',') {
+          luaX_next(ls);  /* skip ',' */
+          parse_type(ls);  /* next type parameter */
+        }
+        if (ls->t.token != '>')
+          luaX_syntaxerror(ls, "'>' expected to close generic type");
+        luaX_next(ls);  /* skip '>' */
+        typename_ = NULL;  /* generic types: skip validation/runtime check */
+      }
       break;
     }
     case TK_NIL: {
+      typename_ = luaX_newstring(ls, "nil", 3);
       luaX_next(ls);  /* skip 'nil' */
       break;
     }
     case TK_FUNCTION: {
+      typename_ = luaX_newstring(ls, "function", 8);
       luaX_next(ls);  /* skip 'function' as type name */
       /* optional function signature: (params) -> rettype */
       if (ls->t.token == '(') {
@@ -104,11 +329,13 @@ static void parse_type (LexState *ls) {
       break;
     }
     case TK_TRUE: case TK_FALSE: {
+      typename_ = luaX_newstring(ls, "boolean", 7);
       luaX_next(ls);  /* boolean literal types */
       break;
     }
     case '{': {
       /* table type: { ... } - skip balanced braces */
+      typename_ = luaX_newstring(ls, "table", 5);
       int depth = 1;
       luaX_next(ls);  /* skip '{' */
       while (depth > 0 && ls->t.token != TK_EOS) {
@@ -121,6 +348,7 @@ static void parse_type (LexState *ls) {
     }
     case '(': {
       /* function type: (...) -> ... - skip balanced parens */
+      typename_ = luaX_newstring(ls, "function", 8);
       int depth = 1;
       luaX_next(ls);  /* skip '(' */
       while (depth > 0 && ls->t.token != TK_EOS) {
@@ -135,27 +363,40 @@ static void parse_type (LexState *ls) {
       luaX_syntaxerror(ls, "type name expected");
   }
   /* optional '?' for nullable types */
-  if (ls->t.token == '?')
+  if (ls->t.token == '?') {
     luaX_next(ls);  /* skip '?' */
-  /* optional '|' for union types: type | type */
-  while (ls->t.token == '|') {
-    luaX_next(ls);  /* skip '|' */
-    parse_type(ls);  /* parse next type in union */
+    nullable = 1;
   }
+  /* optional '|' for union types: type | type */
+  if (ls->t.token == '|') {
+    /* for union types, don't do runtime checking (too complex) */
+    while (ls->t.token == '|') {
+      luaX_next(ls);  /* skip '|' */
+      parse_type(ls);  /* parse next type in union */
+    }
+    return NULL;  /* no single type to check */
+  }
+  /* 'any' type means no checking */
+  if (typename_ != NULL && strcmp(getstr(typename_), "any") == 0)
+    return NULL;  /* 'any' = no type checking */
+  /* validate type name at compile time */
+  if (typename_ != NULL && !is_valid_typename(ls, typename_))
+    luaK_semerror(ls, "unknown type '%s'", getstr(typename_));
+  (void)nullable;  /* nullable types allow nil at runtime (handled in VM) */
+  return typename_;
 }
 
 
 /*
 ** Try to parse an optional type annotation (': type').
-** Returns 1 if annotation was found, 0 otherwise.
+** Returns the type name TString* if annotation found, NULL otherwise.
 */
-static int optional_type_annotation (LexState *ls) {
+static TString *optional_type_annotation (LexState *ls) {
   if (ls->t.token == ':') {
     luaX_next(ls);  /* skip ':' */
-    parse_type(ls);
-    return 1;
+    return parse_type(ls);
   }
-  return 0;
+  return NULL;
 }
 
 
@@ -272,9 +513,13 @@ static short registerlocalvar (LexState *ls, FuncState *fs,
   int oldsize = f->sizelocvars;
   luaM_growvector(ls->L, f->locvars, fs->ndebugvars, f->sizelocvars,
                   LocVar, SHRT_MAX, "local variables");
-  while (oldsize < f->sizelocvars)
-    f->locvars[oldsize++].varname = NULL;
+  while (oldsize < f->sizelocvars) {
+    f->locvars[oldsize].varname = NULL;
+    f->locvars[oldsize].typename_ = NULL;
+    oldsize++;
+  }
   f->locvars[fs->ndebugvars].varname = varname;
+  f->locvars[fs->ndebugvars].typename_ = NULL;
   f->locvars[fs->ndebugvars].startpc = fs->pc;
   luaC_objbarrier(ls->L, f, varname);
   return fs->ndebugvars++;
@@ -295,6 +540,7 @@ static int new_varkind (LexState *ls, TString *name, lu_byte kind) {
   var = &dyd->actvar.arr[dyd->actvar.n++];
   var->vd.kind = kind;  /* default */
   var->vd.name = name;
+  var->vd.type_annotation = NULL;
   return dyd->actvar.n - 1 - fs->firstlocal;
 }
 
@@ -428,6 +674,11 @@ static void adjustlocalvars (LexState *ls, int nvars) {
     Vardesc *var = getlocalvardesc(fs, vidx);
     var->vd.ridx = cast_byte(reglevel++);
     var->vd.pidx = registerlocalvar(ls, fs, var->vd.name);
+    /* transfer type annotation to debug info */
+    if (var->vd.type_annotation != NULL) {
+      fs->f->locvars[var->vd.pidx].typename_ = var->vd.type_annotation;
+      luaC_objbarrier(ls->L, fs->f, var->vd.type_annotation);
+    }
     luaY_checklimit(fs, reglevel, MAXVARS, "local variables");
   }
 }
@@ -613,6 +864,18 @@ static void buildglobal (LexState *ls, TString *varname, expdesc *var) {
 */
 static void buildvar (LexState *ls, TString *varname, expdesc *var) {
   FuncState *fs = ls->fs;
+  /* 'super' keyword: resolve to parent class in class method context */
+  if (fs->classctx != NULL &&
+      strcmp(getstr(varname), "super") == 0) {
+    /* find parent of current class */
+    for (int i = 0; i < ls->nclassparents; i++) {
+      if (ls->classparents[i].classname == fs->classctx &&
+          ls->classparents[i].parentname != NULL) {
+        varname = ls->classparents[i].parentname;
+        break;
+      }
+    }
+  }
   init_exp(var, VGLOBAL, -1);  /* global by default */
   singlevaraux(fs, varname, var, 1);
   if (var->k == VGLOBAL) {  /* global name? */
@@ -908,6 +1171,7 @@ static void open_func (LexState *ls, FuncState *fs, BlockCnt *bl) {
   fs->ndebugvars = 0;
   fs->nactvar = 0;
   fs->needclose = 0;
+  fs->classctx = NULL;  /* not inside a class method by default */
   fs->firstlocal = ls->dyd->actvar.n;
   fs->firstlabel = ls->dyd->label.n;
   fs->bl = NULL;
@@ -982,6 +1246,27 @@ static void fieldsel (LexState *ls, expdesc *v) {
   /* fieldsel -> ['.' | ':'] NAME */
   FuncState *fs = ls->fs;
   expdesc key;
+  /* compile-time access check: if v is a typed local variable with a class
+     type, check if the field is private/protected */
+  if (v->k == VLOCAL && ls->nclassfields > 0) {
+    Vardesc *vd = getlocalvardesc(fs, v->u.var.vidx);
+    if (vd->vd.type_annotation != NULL) {
+      /* peek at the field name (next token after dot/colon) */
+      int nexttoken = luaX_lookahead(ls);
+      if (nexttoken == TK_NAME) {
+        TString *fieldname = ls->lookahead.seminfo.ts;
+        int blocked = check_field_access(ls, vd->vd.type_annotation, fieldname);
+        if (blocked == ACCESS_PRIVATE)
+          luaK_semerror(ls,
+            "cannot access private field '%s' of class '%s'",
+            getstr(fieldname), getstr(vd->vd.type_annotation));
+        else if (blocked == ACCESS_PROTECTED)
+          luaK_semerror(ls,
+            "cannot access protected field '%s' of class '%s'",
+            getstr(fieldname), getstr(vd->vd.type_annotation));
+      }
+    }
+  }
   luaK_exp2anyregup(fs, v);
   luaX_next(ls);  /* skip the dot or colon */
   codename(ls, &key);
@@ -1195,13 +1480,22 @@ static void parlist (LexState *ls) {
 }
 
 
+static void body_classctx (LexState *ls, expdesc *e, int ismethod,
+                           int line, TString *classctx);
+
 static void body (LexState *ls, expdesc *e, int ismethod, int line) {
+  body_classctx(ls, e, ismethod, line, NULL);
+}
+
+static void body_classctx (LexState *ls, expdesc *e, int ismethod,
+                           int line, TString *classctx) {
   /* body ->  '(' parlist ')' [':' type] block END */
   FuncState new_fs;
   BlockCnt bl;
   new_fs.f = addprototype(ls);
   new_fs.f->linedefined = line;
   open_func(ls, &new_fs, &bl);
+  new_fs.classctx = classctx;  /* set class context for access checking */
   checknext(ls, '(');
   if (ismethod) {
     new_localvarliteral(ls, "self");  /* create 'self' parameter */
@@ -1321,6 +1615,46 @@ static void suffixedexp (LexState *ls, expdesc *v) {
         fieldsel(ls, v);
         break;
       }
+      case '?': {  /* nullable chaining: ?. or ?[ */
+        luaX_next(ls);  /* skip '?' */
+        if (ls->t.token == '.' || ls->t.token == '[') {
+          /* a?.b compiles to:
+               local __tmp = a
+               if __tmp == nil then result = nil
+               else result = __tmp.b end
+          */
+          int resultreg;
+          luaK_exp2nextreg(fs, v);
+          resultreg = fs->freereg - 1;
+          /* TEST resultreg k=0: skip JMP if truthy */
+          luaK_codeABCk(fs, OP_TEST, resultreg, 0, 0, 0);
+          int jmp_nil = luaK_jump(fs);
+          /* not nil: do field access (result stays in resultreg) */
+          init_exp(v, VNONRELOC, resultreg);
+          if (ls->t.token == '.')
+            fieldsel(ls, v);
+          else {
+            expdesc key;
+            luaK_exp2anyregup(fs, v);
+            yindex(ls, &key);
+            luaK_indexed(fs, v, &key);
+          }
+          luaK_exp2nextreg(fs, v);
+          if (v->u.info != resultreg)
+            luaK_codeABC(fs, OP_MOVE, resultreg, v->u.info, 0);
+          fs->freereg = cast_byte(resultreg + 1);
+          int jmp_end = luaK_jump(fs);
+          /* nil path: store nil in resultreg */
+          luaK_patchtohere(fs, jmp_nil);
+          luaK_nil(fs, resultreg, 1);
+          luaK_patchtohere(fs, jmp_end);
+          init_exp(v, VNONRELOC, resultreg);
+        }
+        else {
+          luaX_syntaxerror(ls, "'.' or '[' expected after '?'");
+        }
+        break;
+      }
       case '[': {  /* '[' exp ']' */
         expdesc key;
         luaK_exp2anyregup(fs, v);
@@ -1393,7 +1727,106 @@ static void simpleexp (LexState *ls, expdesc *v) {
       body(ls, v, 0, ls->linenumber);
       return;
     }
+    case '|': {
+      /* lambda: |params| expr
+         Compiles to: function(params) return expr end */
+      FuncState new_fs;
+      BlockCnt bl;
+      int line = ls->linenumber;
+      new_fs.f = addprototype(ls);
+      new_fs.f->linedefined = line;
+      open_func(ls, &new_fs, &bl);
+      luaX_next(ls);  /* skip '|' */
+      /* parse parameter list */
+      int nparams = 0;
+      if (ls->t.token != '|') {
+        do {
+          new_localvar(ls, str_checkname(ls));
+          /* type annotation in lambda: ': type' but stop before '|' */
+          if (ls->t.token == ':') {
+            luaX_next(ls);  /* skip ':' */
+            /* parse simple type name only (no union with |) */
+            if (ls->t.token == TK_NAME || ls->t.token == TK_NIL ||
+                ls->t.token == TK_FUNCTION)
+              luaX_next(ls);
+            if (ls->t.token == '?') luaX_next(ls);
+          }
+          nparams++;
+        } while (testnext(ls, ','));
+      }
+      if (ls->t.token != '|')
+        luaX_syntaxerror(ls, "'|' expected to close lambda parameters");
+      luaX_next(ls);  /* skip closing '|' */
+      adjustlocalvars(ls, nparams);
+      new_fs.f->numparams = cast_byte(new_fs.nactvar);
+      luaK_reserveregs(&new_fs, new_fs.nactvar);
+      /* parse body expression */
+      expdesc e;
+      expr(ls, &e);
+      /* generate: return expr */
+      luaK_exp2nextreg(&new_fs, &e);
+      luaK_ret(&new_fs, new_fs.nactvar, 1);
+      new_fs.f->lastlinedefined = ls->linenumber;
+      codeclosure(ls, v);
+      close_func(ls);
+      return;
+    }
     default: {
+      /* String interpolation: f"hello {name} world"
+         Only supports simple variable references {name}, not expressions.
+         Compiles to: "hello " .. tostring(name) .. " world" */
+      if (ls->t.token == TK_NAME
+          && ls->t.seminfo.ts == luaX_newstring(ls, "f", 1)
+          && luaX_lookahead(ls) == TK_STRING) {
+        FuncState *fs = ls->fs;
+        luaX_next(ls);  /* skip 'f' (lookahead consumed next token) */
+        TString *tmpl = ls->t.seminfo.ts;
+        const char *s = getstr(tmpl);
+        size_t len = tsslen(tmpl);
+        luaX_next(ls);  /* skip the string */
+        /* Split template into parts, push all onto stack, then concat */
+        int nparts = 0;
+        int firstreg = fs->freereg;
+        size_t pos = 0;
+        while (pos <= len) {
+          size_t start = pos;
+          while (pos < len && s[pos] != '{') pos++;
+          /* literal segment */
+          if (pos > start) {
+            expdesc lit;
+            codestring(&lit, luaX_newstring(ls, s + start, pos - start));
+            luaK_exp2nextreg(fs, &lit);
+            nparts++;
+          }
+          if (pos >= len) break;
+          if (s[pos] == '{') {
+            pos++;
+            size_t es = pos;
+            while (pos < len && s[pos] != '}') pos++;
+            if (pos < len) {
+              TString *vn = luaX_newstring(ls, s + es, pos - es);
+              expdesc ve;
+              buildvar(ls, vn, &ve);
+              luaK_exp2nextreg(fs, &ve);
+              nparts++;
+              pos++;  /* skip '}' */
+            }
+          }
+        }
+        if (nparts == 0) {
+          codestring(v, luaX_newstring(ls, "", 0));
+        }
+        else if (nparts == 1) {
+          init_exp(v, VNONRELOC, firstreg);
+        }
+        else {
+          /* OP_CONCAT A B: R[A] = R[A] .. ... .. R[A+B-1] */
+          luaK_codeABC(fs, OP_CONCAT, firstreg, nparts, 0);
+          fs->freereg = cast_byte(firstreg + 1);  /* result in firstreg */
+          init_exp(v, VNONRELOC, firstreg);
+        }
+        return;
+      }
       suffixedexp(ls, v);
       return;
     }
@@ -1920,13 +2353,18 @@ static void localstat (LexState *ls) {
   int nvars = 0;
   int nexps;
   expdesc e;
+  int firstvar;  /* index of first variable in this declaration */
   /* get prefixed attribute (if any); default is regular local variable */
   lu_byte defkind = getvarattribute(ls, VDKREG);
+  firstvar = fs->nactvar;
   do {  /* for each variable */
     TString *vname = str_checkname(ls);  /* get its name */
-    optional_type_annotation(ls);  /* skip optional ': type' */
+    TString *typanno = optional_type_annotation(ls);  /* optional ': type' */
     lu_byte kind = getvarattribute(ls, defkind);  /* postfixed attribute */
     vidx = new_varkind(ls, vname, kind);  /* predeclare it */
+    /* store type annotation in Vardesc */
+    if (typanno != NULL)
+      getlocalvardesc(fs, vidx)->vd.type_annotation = typanno;
     if (kind == RDKTOCLOSE) {  /* to-be-closed? */
       if (toclose != -1)  /* one already present? */
         luaK_semerror(ls, "multiple to-be-closed variables in local list");
@@ -1953,6 +2391,38 @@ static void localstat (LexState *ls) {
     adjustlocalvars(ls, nvars);
   }
   checktoclose(fs, toclose);
+  /* emit OP_TYPECHECK for typed variables (after assignment) */
+  if (nexps > 0) {  /* only if there are initializers */
+    int i;
+    for (i = 0; i < nvars; i++) {
+      Vardesc *v = getlocalvardesc(fs, firstvar + i);
+      if (v->vd.type_annotation != NULL) {
+        const char *expected = getstr(v->vd.type_annotation);
+        /* for single-var assignments, check literal type at compile time */
+        if (nvars == 1 && nexps == 1) {
+          const char *actual = expr_compiletime_type(e.k);
+          if (actual != NULL && strcmp(expected, "unknown") != 0) {
+            if (strcmp(expected, actual) != 0)
+              luaK_semerror(ls,
+                "type error: '%s' expected for variable '%s', got '%s'",
+                expected, getstr(v->vd.name), actual);
+          }
+        }
+        /* emit OP_TYPECHECK for dynamic values (function calls etc) */
+        int reg = v->vd.ridx;
+        int tid = get_typeid(expected);
+        if (tid >= 0) {
+          /* built-in type: use type ID for fast check (no strcmp) */
+          luaK_codeABC(fs, OP_TYPECHECK, reg, tid, 0);
+        }
+        else {
+          /* class type: use TYPEID_CLASS + K index for class name */
+          int kk = luaK_stringK(fs, v->vd.type_annotation);
+          luaK_codeABC(fs, OP_TYPECHECK, reg, TYPEID_CLASS, kk);
+        }
+      }
+    }
+  }
 }
 
 
@@ -2163,6 +2633,201 @@ static void typestat (LexState *ls) {
 
 /*
 ** =======================================================
+** Interface declaration
+** =======================================================
+*/
+
+/*
+** Register an interface in the parser's registry.
+*/
+static void register_interface (LexState *ls, TString *name) {
+  lua_State *L = ls->L;
+  if (ls->ninterfaces >= ls->interfaces_size) {
+    int newsize = (ls->interfaces_size == 0) ? 4 : ls->interfaces_size * 2;
+    ls->interfaces = luaM_reallocvector(L, ls->interfaces,
+                       ls->interfaces_size, newsize, struct InterfaceInfo);
+    ls->interfaces_size = newsize;
+  }
+  struct InterfaceInfo *iface = &ls->interfaces[ls->ninterfaces++];
+  iface->name = name;
+  iface->methods = NULL;
+  iface->nmethods = 0;
+  iface->methods_size = 0;
+}
+
+static struct InterfaceInfo *find_interface (LexState *ls, TString *name) {
+  for (int i = 0; i < ls->ninterfaces; i++) {
+    if (ls->interfaces[i].name == name)
+      return &ls->interfaces[i];
+  }
+  return NULL;
+}
+
+static void interface_add_method (LexState *ls, struct InterfaceInfo *iface,
+                                   TString *method) {
+  lua_State *L = ls->L;
+  if (iface->nmethods >= iface->methods_size) {
+    int newsize = (iface->methods_size == 0) ? 8 : iface->methods_size * 2;
+    iface->methods = luaM_reallocvector(L, iface->methods,
+                       iface->methods_size, newsize, TString *);
+    iface->methods_size = newsize;
+  }
+  iface->methods[iface->nmethods++] = method;
+}
+
+
+/*
+** interfacestat -> INTERFACE NAME { FUNCTION NAME '(' parlist ')' [':' type] }
+**                  END
+** Parsed at compile time only. Stores method signatures for validation
+** when a class uses 'implements'.
+*/
+static void interfacestat (LexState *ls, int line) {
+  TString *ifname;
+  struct InterfaceInfo *iface;
+  luaX_next(ls);  /* skip 'interface' */
+  ifname = str_checkname(ls);
+  register_interface(ls, ifname);
+  /* also register as a valid type name */
+  register_classname(ls, ifname);
+  iface = find_interface(ls, ifname);
+
+  /* parse interface body: method declarations (no bodies) */
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+    if (ls->t.token == TK_FUNCTION) {
+      luaX_next(ls);  /* skip 'function' */
+      TString *mname = str_checkname(ls);
+      interface_add_method(ls, iface, mname);
+      /* parse parameter list (just skip it) */
+      checknext(ls, '(');
+      while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+        if (ls->t.token == TK_NAME) {
+          luaX_next(ls);  /* skip param name */
+          optional_type_annotation(ls);
+        }
+        else if (ls->t.token == TK_DOTS)
+          luaX_next(ls);
+        if (ls->t.token == ',') luaX_next(ls);
+      }
+      checknext(ls, ')');
+      optional_type_annotation(ls);  /* return type */
+      /* no body - just declaration */
+    }
+    else if (ls->t.token == TK_NAME) {
+      /* field declaration: NAME ':' type */
+      luaX_next(ls);
+      if (ls->t.token == ':') {
+        luaX_next(ls);
+        parse_type(ls);
+      }
+    }
+    else if (ls->t.token == ';') {
+      luaX_next(ls);
+    }
+    else {
+      luaX_syntaxerror(ls, "'function' or 'end' expected in interface body");
+    }
+  }
+  check_match(ls, TK_END, TK_NAME, line);
+}
+
+
+/*
+** Check that a class implements all methods required by an interface.
+** Called at compile time after the class body is parsed.
+*/
+static void check_implements (LexState *ls, TString *classname,
+                               TString *ifacename,
+                               TString **class_methods, int nclass_methods) {
+  struct InterfaceInfo *iface = find_interface(ls, ifacename);
+  if (iface == NULL)
+    luaK_semerror(ls, "unknown interface '%s'", getstr(ifacename));
+  for (int i = 0; i < iface->nmethods; i++) {
+    TString *required = iface->methods[i];
+    int found = 0;
+    for (int j = 0; j < nclass_methods; j++) {
+      if (class_methods[j] == required) { found = 1; break; }
+    }
+    if (!found)
+      luaK_semerror(ls, "class '%s' missing method '%s' required by interface '%s'",
+                    getstr(classname), getstr(required), getstr(ifacename));
+  }
+}
+
+
+/*
+** =======================================================
+** Enum declaration
+** =======================================================
+*/
+
+/*
+** enumstat -> ENUM NAME { NAME ['=' expr] {',' NAME ['=' expr]} } END
+** Generates: EnumName = {VALUE1 = 1, VALUE2 = 2, ...}
+*/
+static void enumstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  TString *enumname;
+  expdesc var, val;
+  int pc;
+  int counter = 1;
+
+  luaX_next(ls);  /* skip 'enum' */
+  enumname = str_checkname(ls);
+
+  /* register as valid type name */
+  register_classname(ls, enumname);
+
+  /* Generate: EnumName = {} */
+  buildglobal(ls, enumname, &var);
+  pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+  luaK_code(fs, 0);
+  init_exp(&val, VNONRELOC, fs->freereg);
+  luaK_reserveregs(fs, 1);
+  luaK_settablesize(fs, pc, val.u.info, 0, 0);
+  luaK_storevar(fs, &var, &val);
+  luaK_fixline(fs, line);
+
+  /* parse enum values */
+  while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+    if (ls->t.token == TK_NAME) {
+      TString *vname = str_checkname(ls);
+      expdesc tab, key, vv;
+
+      if (testnext(ls, '=')) {
+        /* explicit value */
+        expr(ls, &vv);
+      }
+      else {
+        /* auto-increment */
+        init_exp(&vv, VKINT, 0);
+        vv.u.ival = counter;
+      }
+      counter++;
+
+      /* EnumName.VALUE = val */
+      buildglobal(ls, enumname, &tab);
+      luaK_exp2anyregup(fs, &tab);
+      codestring(&key, vname);
+      luaK_indexed(fs, &tab, &key);
+      luaK_storevar(fs, &tab, &vv);
+      luaK_fixline(fs, ls->linenumber);
+
+      testnext(ls, ',');  /* optional comma */
+    }
+    else if (ls->t.token == ';') {
+      luaX_next(ls);
+    }
+    else {
+      luaX_syntaxerror(ls, "name or 'end' expected in enum body");
+    }
+  }
+  check_match(ls, TK_END, TK_NAME, line);
+}
+
+
+/*
+** =======================================================
 ** Class declaration statement
 ** =======================================================
 */
@@ -2172,7 +2837,7 @@ static void typestat (LexState *ls) {
 ** Parse a class body method: function NAME '(' parlist ')' block end
 ** Generates: ClassName.methodName = function(self, ...) ... end
 */
-static void classmethod (LexState *ls, expdesc *classvar) {
+static TString *classmethod (LexState *ls, expdesc *classvar, TString *cname) {
   /* classmethod -> FUNCTION NAME body */
   FuncState *fs = ls->fs;
   int line = ls->linenumber;
@@ -2185,10 +2850,19 @@ static void classmethod (LexState *ls, expdesc *classvar) {
   expdesc tab = *classvar;
   luaK_exp2anyregup(fs, &tab);
   luaK_indexed(fs, &tab, &key);  /* tab = ClassName[methodName] */
-  /* parse function body (not a method - 'self' is explicit first param) */
-  body(ls, &b, 0, line);
+  /* parse function body with class context set */
+  /* body() will call open_func which creates a new FuncState;
+     we set classctx on that new FuncState after open_func via
+     a temporary stored in ls */
+  TString *saved_classctx = ls->fs->classctx;
+  /* The body() function will create a new FuncState. We need to set
+     classctx on the NEW FuncState. Use a trick: set it on the current
+     fs, and body's open_func will inherit it from prev. */
+  body_classctx(ls, &b, 0, line, cname);
+  ls->fs->classctx = saved_classctx;  /* restore */
   luaK_storevar(fs, &tab, &b);
   luaK_fixline(fs, line);
+  return methodname;
 }
 
 
@@ -2213,12 +2887,29 @@ static void classstat (LexState *ls, int line) {
   luaX_next(ls);  /* skip 'class' */
   classname = str_checkname(ls);  /* get class name */
 
+  /* register class name for compile-time type validation */
+  register_classname(ls, classname);
+
   /* Check for 'extends' */
   TString *parentname = NULL;
-  if (ls->t.token == TK_EXTENDS) {
+  if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->extendsn) {
     luaX_next(ls);  /* skip 'extends' */
-    parentname = str_checkname(ls);  /* get parent class name */
+    parentname = str_checkname(ls);
     hasparent = 1;
+  }
+  register_classparent(ls, classname, parentname);
+
+  /* Check for 'implements' */
+  #define MAX_IMPLEMENTS 8
+  TString *impl_ifaces[MAX_IMPLEMENTS];
+  int nimpl = 0;
+  if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->implementsn) {
+    luaX_next(ls);  /* skip 'implements' */
+    do {
+      if (nimpl >= MAX_IMPLEMENTS)
+        luaK_semerror(ls, "too many interfaces");
+      impl_ifaces[nimpl++] = str_checkname(ls);
+    } while (testnext(ls, ','));
   }
 
   /*
@@ -2253,6 +2944,20 @@ static void classstat (LexState *ls, int line) {
 
     buildglobal(ls, classname, &self);
     luaK_storevar(fs, &tab, &self);
+    luaK_fixline(fs, line);
+  }
+
+  /*
+  ** Generate: ClassName.__name = "ClassName" (for RTTI)
+  */
+  {
+    expdesc tab, key, val;
+    buildglobal(ls, classname, &tab);
+    luaK_exp2anyregup(fs, &tab);
+    codestring(&key, luaX_newstring(ls, "__name", 6));
+    luaK_indexed(fs, &tab, &key);
+    codestring(&val, classname);
+    luaK_storevar(fs, &tab, &val);
     luaK_fixline(fs, line);
   }
 
@@ -2309,21 +3014,347 @@ static void classstat (LexState *ls, int line) {
   }
 
   /*
-  ** Parse class body: field declarations and methods
+  ** Parse class body: field declarations, methods, and properties
+  ** with access modifiers (public/private/protected/readonly)
   */
+  /* Track if we need access control setup */
+  int has_access_control = 0;
+
+  /* Pre-create __getters and __setters tables on the class */
+  {
+    expdesc cv, key, tab;
+    int pc;
+    /* ClassName.__getters = {} */
+    buildglobal(ls, classname, &cv);
+    luaK_exp2anyregup(fs, &cv);
+    codestring(&key, luaX_newstring(ls, "__getters", 9));
+    luaK_indexed(fs, &cv, &key);
+    pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+    luaK_code(fs, 0);
+    init_exp(&tab, VNONRELOC, fs->freereg);
+    luaK_reserveregs(fs, 1);
+    luaK_settablesize(fs, pc, tab.u.info, 0, 0);
+    luaK_storevar(fs, &cv, &tab);
+
+    /* ClassName.__setters = {} */
+    buildglobal(ls, classname, &cv);
+    luaK_exp2anyregup(fs, &cv);
+    codestring(&key, luaX_newstring(ls, "__setters", 9));
+    luaK_indexed(fs, &cv, &key);
+    pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+    luaK_code(fs, 0);
+    init_exp(&tab, VNONRELOC, fs->freereg);
+    luaK_reserveregs(fs, 1);
+    luaK_settablesize(fs, pc, tab.u.info, 0, 0);
+    luaK_storevar(fs, &cv, &tab);
+  }
+
+  /* field access info: stored as parallel arrays */
+  #define MAX_CLASS_FIELDS 64
+  TString *field_names[MAX_CLASS_FIELDS];
+  const char *field_access[MAX_CLASS_FIELDS];
+  int nfields = 0;
+
+  /* getter/setter names for properties */
+  TString *getter_names[MAX_CLASS_FIELDS];
+  TString *setter_names[MAX_CLASS_FIELDS];
+  int ngetters = 0;
+  int nsetters = 0;
+
+  /* track method names for implements checking */
+  #define MAX_CLASS_METHODS 64
+  TString *class_method_names[MAX_CLASS_METHODS];
+  int nclass_methods = 0;
+
+  int is_abstract_class = 0;  /* set if any abstract method found */
+
   while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
     if (ls->t.token == TK_FUNCTION) {
-      /* Method declaration */
+      /* Method declaration - check override requirement */
       expdesc cv;
       buildglobal(ls, classname, &cv);
-      classmethod(ls, &cv);
+      /* peek at method name to check override */
+      int saved_tok = ls->t.token;
+      luaX_next(ls);  /* skip 'function' */
+      TString *peekname = ls->t.seminfo.ts;
+      /* check: does this method exist in parent? */
+      if (hasparent && method_exists_in_parent(ls, classname, peekname))
+        luaK_semerror(ls,
+          "method '%s' exists in parent class; use 'override function %s' to override",
+          getstr(peekname), getstr(peekname));
+      /* put tokens back and let classmethod handle normally */
+      /* Actually classmethod expects to skip 'function' itself,
+         but we already skipped it. Push name back via unread... */
+      /* Simpler: just call the rest of classmethod inline */
+      {
+        int line = ls->linenumber;
+        expdesc key, b;
+        TString *methodname = str_checkname(ls);
+        codestring(&key, methodname);
+        expdesc tab = cv;
+        luaK_exp2anyregup(fs, &tab);
+        luaK_indexed(fs, &tab, &key);
+        TString *saved = ls->fs->classctx;
+        body_classctx(ls, &b, 0, line, classname);
+        ls->fs->classctx = saved;
+        luaK_storevar(fs, &tab, &b);
+        luaK_fixline(fs, line);
+        /* register method */
+        register_classmethod_info(ls, classname, methodname);
+        if (nclass_methods < MAX_CLASS_METHODS)
+          class_method_names[nclass_methods++] = methodname;
+      }
     }
     else if (ls->t.token == TK_NAME) {
-      /* Field declaration: name ':' type (parsed and discarded) */
-      luaX_next(ls);  /* skip field name */
-      if (ls->t.token == ':') {
-        luaX_next(ls);  /* skip ':' */
-        parse_type(ls);  /* skip type */
+      /* Check for 'static', 'abstract', 'operator', 'override' keywords */
+      const char *kw = getstr(ls->t.seminfo.ts);
+
+      /* override function NAME(...) - explicit parent method override */
+      if (strcmp(kw, "override") == 0) {
+        luaX_next(ls);  /* skip 'override' */
+        if (ls->t.token != TK_FUNCTION)
+          luaX_syntaxerror(ls, "'function' expected after 'override'");
+        luaX_next(ls);  /* skip 'function' */
+        TString *mname = ls->t.seminfo.ts;
+        /* verify method DOES exist in parent */
+        if (!method_exists_in_parent(ls, classname, mname))
+          luaK_semerror(ls,
+            "override '%s': method not found in parent class",
+            getstr(mname));
+        /* compile as normal method */
+        expdesc cv;
+        buildglobal(ls, classname, &cv);
+        {
+          int line = ls->linenumber;
+          expdesc key, b;
+          TString *methodname = str_checkname(ls);
+          codestring(&key, methodname);
+          expdesc tab = cv;
+          luaK_exp2anyregup(fs, &tab);
+          luaK_indexed(fs, &tab, &key);
+          TString *saved = ls->fs->classctx;
+          body_classctx(ls, &b, 0, line, classname);
+          ls->fs->classctx = saved;
+          luaK_storevar(fs, &tab, &b);
+          luaK_fixline(fs, line);
+          register_classmethod_info(ls, classname, methodname);
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = methodname;
+        }
+        continue;
+      }
+
+      /* static function NAME(...) - stored on class table directly */
+      if (strcmp(kw, "static") == 0) {
+        luaX_next(ls);  /* skip 'static' */
+        if (ls->t.token == TK_FUNCTION) {
+          expdesc cv;
+          buildglobal(ls, classname, &cv);
+          /* classmethod without class context (no self access to private) */
+          TString *mname = classmethod(ls, &cv, NULL);
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = mname;
+        }
+        else {
+          luaX_syntaxerror(ls, "'function' expected after 'static'");
+        }
+        continue;
+      }
+
+      /* abstract function NAME(...) - no body, just declaration */
+      if (strcmp(kw, "abstract") == 0) {
+        luaX_next(ls);  /* skip 'abstract' */
+        if (ls->t.token == TK_FUNCTION) {
+          luaX_next(ls);  /* skip 'function' */
+          TString *mname = str_checkname(ls);
+          /* skip param list */
+          checknext(ls, '(');
+          while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+            if (ls->t.token == TK_NAME) {
+              luaX_next(ls);
+              optional_type_annotation(ls);
+            }
+            else if (ls->t.token == TK_DOTS)
+              luaX_next(ls);
+            if (ls->t.token == ',') luaX_next(ls);
+          }
+          checknext(ls, ')');
+          optional_type_annotation(ls);
+          /* no body - abstract */
+          is_abstract_class = 1;
+          if (nclass_methods < MAX_CLASS_METHODS)
+            class_method_names[nclass_methods++] = mname;
+        }
+        else {
+          luaX_syntaxerror(ls, "'function' expected after 'abstract'");
+        }
+        continue;
+      }
+
+      /* operator + - * / == < (maps to __add etc) */
+      if (strcmp(kw, "operator") == 0) {
+        luaX_next(ls);  /* skip 'operator' */
+        /* get the operator symbol */
+        TString *metamethod = NULL;
+        switch (ls->t.token) {
+          case '+': metamethod = luaX_newstring(ls, "__add", 5); break;
+          case '-': metamethod = luaX_newstring(ls, "__sub", 5); break;
+          case '*': metamethod = luaX_newstring(ls, "__mul", 5); break;
+          case '/': metamethod = luaX_newstring(ls, "__div", 5); break;
+          case '%': metamethod = luaX_newstring(ls, "__mod", 5); break;
+          case TK_EQ: metamethod = luaX_newstring(ls, "__eq", 4); break;
+          case '<': metamethod = luaX_newstring(ls, "__lt", 4); break;
+          case TK_LE: metamethod = luaX_newstring(ls, "__le", 4); break;
+          case TK_CONCAT: metamethod = luaX_newstring(ls, "__concat", 8); break;
+          default:
+            if (ls->t.token == TK_NAME) {
+              const char *opn = getstr(ls->t.seminfo.ts);
+              if (strcmp(opn, "len") == 0)
+                metamethod = luaX_newstring(ls, "__len", 5);
+              else if (strcmp(opn, "tostring") == 0)
+                metamethod = luaX_newstring(ls, "__tostring", 10);
+              else if (strcmp(opn, "call") == 0)
+                metamethod = luaX_newstring(ls, "__call", 6);
+            }
+            if (metamethod == NULL)
+              luaX_syntaxerror(ls, "unknown operator for overloading");
+        }
+        luaX_next(ls);  /* skip operator token */
+        /* parse function body: ClassName.__metamethod = function(...) ... end */
+        {
+          expdesc cv, key, b;
+          buildglobal(ls, classname, &cv);
+          luaK_exp2anyregup(fs, &cv);
+          codestring(&key, metamethod);
+          luaK_indexed(fs, &cv, &key);
+          body_classctx(ls, &b, 0, ls->linenumber, classname);
+          luaK_storevar(fs, &cv, &b);
+          luaK_fixline(fs, ls->linenumber);
+        }
+        continue;
+      }
+      TString *word = ls->t.seminfo.ts;
+      const char *ws = getstr(word);
+      /* check for access modifiers */
+      const char *access = NULL;
+      int is_readonly = 0;
+      if (strcmp(ws, "public") == 0 || strcmp(ws, "private") == 0 ||
+          strcmp(ws, "protected") == 0 || strcmp(ws, "readonly") == 0) {
+        if (strcmp(ws, "readonly") == 0) {
+          access = "readonly";
+          is_readonly = 1;
+        }
+        else
+          access = ws;
+        luaX_next(ls);  /* skip modifier */
+        /* check for 'readonly' after public/private/protected */
+        if (!is_readonly && ls->t.token == TK_NAME) {
+          const char *nxt = getstr(ls->t.seminfo.ts);
+          if (strcmp(nxt, "readonly") == 0) {
+            /* e.g. "private readonly x: number" - use private */
+            luaX_next(ls);  /* skip 'readonly' */
+          }
+        }
+        has_access_control = 1;
+      }
+
+      /* check for 'property' keyword */
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "property") == 0 &&
+          access != NULL) {
+        /* access modifier before property - skip to property handling */
+        /* fall through to property check below */
+      }
+
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "property") == 0) {
+        /* property NAME
+             get(self) ... end
+             set(self, v) ... end
+           end */
+        luaX_next(ls);  /* skip 'property' */
+        TString *propname = str_checkname(ls);
+        optional_type_annotation(ls);  /* optional ': type' */
+        has_access_control = 1;
+
+        /* parse get/set blocks until 'end' */
+        while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+          if (ls->t.token == TK_NAME) {
+            const char *gs = getstr(ls->t.seminfo.ts);
+            if (strcmp(gs, "get") == 0) {
+              /* get(self) block end */
+              expdesc cv, key, b;
+              luaX_next(ls);  /* skip 'get' */
+              /* Store as ClassName.__getters.propname = function ... */
+              buildglobal(ls, classname, &cv);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, luaX_newstring(ls, "__getters", 9));
+              luaK_indexed(fs, &cv, &key);
+              /* Now cv = ClassName.__getters */
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, propname);
+              luaK_indexed(fs, &cv, &key);
+              /* cv = ClassName.__getters[propname] */
+              body_classctx(ls, &b, 0, ls->linenumber, classname);
+              luaK_storevar(fs, &cv, &b);
+              luaK_fixline(fs, ls->linenumber);
+              if (ngetters < MAX_CLASS_FIELDS)
+                getter_names[ngetters++] = propname;
+            }
+            else if (strcmp(gs, "set") == 0) {
+              expdesc cv, key, b;
+              luaX_next(ls);  /* skip 'set' */
+              buildglobal(ls, classname, &cv);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, luaX_newstring(ls, "__setters", 9));
+              luaK_indexed(fs, &cv, &key);
+              luaK_exp2anyregup(fs, &cv);
+              codestring(&key, propname);
+              luaK_indexed(fs, &cv, &key);
+              body_classctx(ls, &b, 0, ls->linenumber, classname);
+              luaK_storevar(fs, &cv, &b);
+              luaK_fixline(fs, ls->linenumber);
+              if (nsetters < MAX_CLASS_FIELDS)
+                setter_names[nsetters++] = propname;
+            }
+            else break;
+          }
+          else break;
+        }
+        checknext(ls, TK_END);  /* property ... end */
+      }
+      else if (ls->t.token == TK_NAME) {
+        /* Field declaration: [modifier] NAME ':' type */
+        TString *fname = ls->t.seminfo.ts;
+        luaX_next(ls);  /* skip field name */
+        if (ls->t.token == ':') {
+          luaX_next(ls);  /* skip ':' */
+          parse_type(ls);  /* skip type */
+        }
+        /* store access info for runtime and compile-time checking */
+        if (access != NULL && nfields < MAX_CLASS_FIELDS) {
+          field_names[nfields] = fname;
+          field_access[nfields] = access;
+          nfields++;
+          /* register for compile-time access validation */
+          lu_byte acc_code = 0;
+          if (strcmp(access, "private") == 0) acc_code = ACCESS_PRIVATE;
+          else if (strcmp(access, "protected") == 0) acc_code = ACCESS_PROTECTED;
+          else if (strcmp(access, "readonly") == 0) acc_code = ACCESS_READONLY;
+          if (acc_code > 0)
+            register_classfield(ls, classname, fname, acc_code);
+        }
+      }
+      else if (access != NULL) {
+        /* modifier without field name - might be followed by function */
+        if (ls->t.token == TK_FUNCTION) {
+          expdesc cv;
+          buildglobal(ls, classname, &cv);
+          classmethod(ls, &cv, classname);
+        }
+        else {
+          luaX_syntaxerror(ls, "field name or 'function' expected after modifier");
+        }
       }
       else {
         luaX_syntaxerror(ls, "':' expected after field name in class body");
@@ -2333,11 +3364,267 @@ static void classstat (LexState *ls, int line) {
       luaX_next(ls);  /* skip optional semicolons */
     }
     else {
-      luaX_syntaxerror(ls, "'function', field declaration, or 'end' expected");
+      luaX_syntaxerror(ls,
+        "'function', field declaration, modifier, or 'end' expected");
     }
   }
 
-  check_match(ls, TK_END, TK_CLASS, line);
+  /*
+  ** Generate access control metadata and call __setup_class
+  */
+  if (has_access_control) {
+    int i;
+
+    /* Create ClassName.__access = {field1 = "access", ...} */
+    if (nfields > 0) {
+      expdesc cv, key;
+      int pc;
+      expdesc tab;
+
+      /* ClassName.__access = {} */
+      buildglobal(ls, classname, &cv);
+      luaK_exp2anyregup(fs, &cv);
+      codestring(&key, luaX_newstring(ls, "__access", 8));
+      luaK_indexed(fs, &cv, &key);
+
+      pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+      luaK_code(fs, 0);
+      init_exp(&tab, VNONRELOC, fs->freereg);
+      luaK_reserveregs(fs, 1);
+      luaK_settablesize(fs, pc, tab.u.info, 0, nfields);
+
+      /* set fields in __access table */
+      for (i = 0; i < nfields; i++) {
+        expdesc t2 = tab, fk, fv;
+        luaK_exp2anyregup(fs, &t2);
+        codestring(&fk, field_names[i]);
+        luaK_indexed(fs, &t2, &fk);
+        codestring(&fv, luaX_newstring(ls, field_access[i],
+                                       strlen(field_access[i])));
+        luaK_storevar(fs, &t2, &fv);
+      }
+
+      luaK_storevar(fs, &cv, &tab);
+      luaK_fixline(fs, line);
+    }
+
+    /* __getters and __setters are pre-created before body parsing */
+
+    /* Call __setup_class(ClassName) */
+    {
+      expdesc setupfn, arg;
+      int base;
+      buildglobal(ls, luaX_newstring(ls, "__setup_class", 13), &setupfn);
+      luaK_exp2nextreg(fs, &setupfn);
+      base = fs->freereg - 1;
+      buildglobal(ls, classname, &arg);
+      luaK_exp2nextreg(fs, &arg);
+      init_exp(&setupfn, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 1));
+      luaK_fixline(fs, line);
+      fs->freereg = cast_byte(base);
+    }
+  }
+
+  /* Check 'implements' constraints at compile time */
+  {
+    int ii;
+    for (ii = 0; ii < nimpl; ii++)
+      check_implements(ls, classname, impl_ifaces[ii],
+                       class_method_names, nclass_methods);
+  }
+
+  check_match(ls, TK_END, TK_NAME, line);
+}
+
+
+/*
+** matchstat -> MATCH expr { CASE expr THEN block } [CASE '_' THEN block] END
+** Compiles to equivalent if/elseif/else chain.
+*/
+/*
+** trystat -> TRY block [EXCEPT NAME THEN block] [FINALLY block] END
+**
+** Compiles to:
+**   local __ok, __err = pcall(function() <try_body> end)
+**   if not __ok then local err = __err; <except_body> end
+**   <finally_body>
+*/
+static void trystat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  luaX_next(ls);  /* skip 'try' */
+
+  /* Wrap try body in pcall(function() ... end) */
+  /* Create closure for try body */
+  expdesc pcallvar, tryclose, result;
+  int base, nresults;
+
+  /* get pcall from _ENV */
+  buildglobal(ls, luaX_newstring(ls, "pcall", 5), &pcallvar);
+  luaK_exp2nextreg(fs, &pcallvar);
+  base = fs->freereg - 1;
+
+  /* create function() <try_body> end as argument */
+  {
+    expdesc b;
+    FuncState new_fs;
+    BlockCnt bl;
+    new_fs.f = addprototype(ls);
+    new_fs.f->linedefined = line;
+    open_func(ls, &new_fs, &bl);
+    new_fs.classctx = NULL;
+    /* parse try body until 'except', 'finally', or 'end' */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+      if (ls->t.token == TK_NAME) {
+        const char *kw = getstr(ls->t.seminfo.ts);
+        if (strcmp(kw, "except") == 0 || strcmp(kw, "finally") == 0)
+          break;
+      }
+      statement(ls);
+    }
+    new_fs.f->lastlinedefined = ls->linenumber;
+    codeclosure(ls, &b);
+    close_func(ls);
+    luaK_exp2nextreg(fs, &b);
+  }
+
+  /* call pcall(try_func): 1 arg, 2 results (ok, err) */
+  init_exp(&result, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 3));
+  luaK_fixline(fs, line);
+  fs->freereg = cast_byte(base + 2);  /* ok in base, err in base+1 */
+
+  /* create locals __ok, __err for the results */
+  int okreg = base;
+  int errreg = base + 1;
+  TString *okname = luaX_newstring(ls, "(try_ok)", 8);
+  TString *errname = luaX_newstring(ls, "(try_err)", 9);
+  new_localvar(ls, okname);
+  new_localvar(ls, errname);
+  adjustlocalvars(ls, 2);
+
+  /* parse 'except errvar then' block */
+  if (ls->t.token == TK_NAME &&
+      strcmp(getstr(ls->t.seminfo.ts), "except") == 0) {
+    luaX_next(ls);  /* skip 'except' */
+
+    /* except NAME then ... */
+    TString *errvarname = str_checkname(ls);
+    checknext(ls, TK_THEN);
+
+    /* if not __ok then local err = __err; <except_body> end */
+    /* TEST okreg, k=1 → skip JMP if falsy (error); execute JMP if truthy (ok) */
+    luaK_codeABCk(fs, OP_TEST, okreg, 0, 0, 1);
+    int jmp_noerr = luaK_jump(fs);
+
+    /* error branch: create local err = __err */
+    {
+      BlockCnt bl;
+      enterblock(fs, &bl, 0);
+      new_localvar(ls, errvarname);
+      luaK_codeABC(fs, OP_MOVE, fs->freereg, errreg, 0);
+      luaK_reserveregs(fs, 1);
+      adjustlocalvars(ls, 1);
+
+      /* parse except body */
+      while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+        if (ls->t.token == TK_NAME &&
+            strcmp(getstr(ls->t.seminfo.ts), "finally") == 0)
+          break;
+        statement(ls);
+      }
+      leaveblock(fs);
+    }
+
+    luaK_patchtohere(fs, jmp_noerr);
+  }
+
+  /* parse 'finally' block */
+  if (ls->t.token == TK_NAME &&
+      strcmp(getstr(ls->t.seminfo.ts), "finally") == 0) {
+    luaX_next(ls);  /* skip 'finally' */
+    /* finally body: always runs */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS)
+      statement(ls);
+  }
+
+  check_match(ls, TK_END, TK_NAME, line);
+}
+
+
+static void matchstat (LexState *ls, int line) {
+  FuncState *fs = ls->fs;
+  expdesc subject;
+  int jmp_end_list = NO_JUMP;
+
+  luaX_next(ls);  /* skip 'match' */
+
+  /* store subject in a local temporary variable */
+  expr(ls, &subject);
+  luaK_exp2nextreg(fs, &subject);
+  int reg = fs->freereg - 1;  /* register holding the subject */
+
+  /* parse case clauses */
+  while (ls->t.token == TK_NAME &&
+         strcmp(getstr(ls->t.seminfo.ts), "case") == 0) {
+    luaX_next(ls);  /* skip 'case' */
+
+    /* check for default: 'case _' */
+    if (ls->t.token == TK_NAME &&
+        strcmp(getstr(ls->t.seminfo.ts), "_") == 0) {
+      luaX_next(ls);  /* skip '_' */
+      checknext(ls, TK_THEN);
+      while (ls->t.token != TK_END && ls->t.token != TK_EOS)
+        statement(ls);
+      break;
+    }
+
+    /* parse pattern value */
+    expdesc pattern;
+    expr(ls, &pattern);
+    luaK_exp2nextreg(fs, &pattern);
+
+    checknext(ls, TK_THEN);
+
+    /* generate: EQ reg, pattern_reg, 0; JMP skip */
+    /* OP_EQ A B k: if ((R[A]==R[B]) ~= k) then pc++ (skip next)
+       k=1: skip next if (R[A]==R[B]) is true → skip JMP → fall into body
+       k=0: skip next if (R[A]==R[B]) is false → skip JMP → fall into body
+       We want: if equal → execute body. if not equal → skip.
+       So: k=0 → if NOT equal, skip JMP → falls through (wrong!)
+       k=1 → if EQUAL, skip JMP → falls into body (right!) */
+    /* OP_EQ A B k: if ((R[A]==R[B]) ~= k) then pc++ (skip next JMP)
+       k=1: if NOT equal → skip JMP → go to next case (fall through)
+             if EQUAL → execute JMP → jump past body... no.
+
+       Actually need: if NOT equal → skip body.
+       Use k=0: if ((eq) ~= 0) → if NOT equal → skip next.
+       Next = JMP to next_case. So if NOT equal, skip JMP, fall into body (WRONG).
+
+       Reverse: use k=1: if eq → skip JMP → fall into body.
+                          if not eq → execute JMP → go to next case. CORRECT! */
+    int preg = fs->freereg - 1;  /* pattern register */
+    luaK_codeABCk(fs, OP_EQ, reg, preg, 0, 0);
+    int jmp_skip = luaK_jump(fs);  /* executed when NOT equal → skip body */
+    fs->freereg = cast_byte(reg + 1);  /* free pattern, keep subject */
+
+    /* case body */
+    while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+      if (ls->t.token == TK_NAME &&
+          strcmp(getstr(ls->t.seminfo.ts), "case") == 0)
+        break;
+      statement(ls);
+    }
+    fs->freereg = cast_byte(reg + 1);  /* preserve subject register */
+
+    /* jump to end */
+    luaK_concat(fs, &jmp_end_list, luaK_jump(fs));
+    luaK_patchtohere(fs, jmp_skip);
+    fs->freereg = cast_byte(reg + 1);  /* reset for next case */
+  }
+
+  luaK_patchtohere(fs, jmp_end_list);
+  fs->freereg = cast_byte(reg);  /* free subject */
+
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -2375,10 +3662,46 @@ static void statement (LexState *ls) {
       funcstat(ls, line);
       break;
     }
-    case TK_LOCAL: {  /* stat -> localstat */
+    case TK_LOCAL: {  /* stat -> localstat | destructuring */
       luaX_next(ls);  /* skip LOCAL */
       if (testnext(ls, TK_FUNCTION))  /* local function? */
         localfunc(ls);
+      else if (ls->t.token == '{') {
+        /* table destructuring: local {a, b, c} = expr
+           Compiles to: local __tmp = expr; local a=__tmp.a; local b=__tmp.b; ... */
+        FuncState *fs = ls->fs;
+        TString *names[MAXVARS];
+        int nnames = 0;
+        int i;
+        luaX_next(ls);  /* skip '{' */
+        do {
+          if (nnames >= MAXVARS)
+            luaK_semerror(ls, "too many variables in destructuring");
+          names[nnames++] = str_checkname(ls);
+        } while (testnext(ls, ','));
+        checknext(ls, '}');
+        checknext(ls, '=');
+        /* create hidden temp var for the source table */
+        TString *tmpname = luaX_newstring(ls, "(destructure)", 13);
+        new_localvar(ls, tmpname);
+        expdesc src;
+        expr(ls, &src);
+        adjust_assign(ls, 1, 1, &src);
+        adjustlocalvars(ls, 1);  /* __tmp is now active */
+        int tmpreg = getlocalvardesc(fs, fs->nactvar - 1)->vd.ridx;
+        /* create locals for each field */
+        for (i = 0; i < nnames; i++)
+          new_localvar(ls, names[i]);
+        /* extract fields: each local = __tmp.fieldname */
+        for (i = 0; i < nnames; i++) {
+          expdesc tab, key;
+          init_exp(&tab, VNONRELOC, tmpreg);
+          codestring(&key, names[i]);
+          luaK_indexed(fs, &tab, &key);
+          luaK_exp2nextreg(fs, &tab);
+        }
+        adjustlocalvars(ls, nnames);
+      }
       else
         localstat(ls);
       break;
@@ -2387,10 +3710,7 @@ static void statement (LexState *ls) {
       globalstatfunc(ls, line);
       break;
     }
-    case TK_CLASS: {  /* stat -> classstat */
-      classstat(ls, line);
-      break;
-    }
+    /* class/interface/enum/try/match: all contextual keywords in TK_NAME */
     case TK_DBCOLON: {  /* stat -> label */
       luaX_next(ls);  /* skip double colon */
       labelstat(ls, str_checkname(ls), line);
@@ -2411,15 +3731,156 @@ static void statement (LexState *ls) {
       break;
     }
     case TK_NAME: {
-      /* check for 'type' keyword (not reserved, to preserve type() function) */
-      if (ls->t.seminfo.ts == ls->typn) {  /* current = "type"? */
+      /* All lua5g contextual keywords detected by name comparison */
+      if (ls->t.seminfo.ts == ls->classn) { classstat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->interfacen) { interfacestat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->tryn) { trystat(ls, line); break; }
+      if (ls->t.seminfo.ts == ls->enumin) {
+        int lk = luaX_lookahead(ls);
+        if (lk == TK_NAME) { enumstat(ls, line); break; }
+      }
+      if (ls->t.seminfo.ts == ls->matchn) { matchstat(ls, line); break; }
+
+      /* 'declare class NAME ... end' */
+      if (strcmp(getstr(ls->t.seminfo.ts), "declare") == 0) {
+        int lk = luaX_lookahead(ls);
+        if (lk == TK_NAME && ls->lookahead.seminfo.ts == ls->classn) {
+          luaX_next(ls);  /* skip 'declare' */
+          luaX_next(ls);  /* skip 'class' */
+          TString *dname = str_checkname(ls);
+          /* register class name and optionally parent */
+          register_classname(ls, dname);
+          TString *dparent = NULL;
+          if (ls->t.token == TK_NAME && ls->t.seminfo.ts == ls->extendsn) {
+            luaX_next(ls);
+            dparent = str_checkname(ls);
+          }
+          register_classparent(ls, dname, dparent);
+          /* Generate minimal: ClassName = ClassName or {}
+             This creates a placeholder table if not already set by C */
+          {
+            FuncState *fs = ls->fs;
+            expdesc var, val;
+            int pc;
+            buildglobal(ls, dname, &var);
+            pc = luaK_codevABCk(fs, OP_NEWTABLE, 0, 0, 0, 0);
+            luaK_code(fs, 0);
+            init_exp(&val, VNONRELOC, fs->freereg);
+            luaK_reserveregs(fs, 1);
+            luaK_settablesize(fs, pc, val.u.info, 0, 0);
+            luaK_storevar(fs, &var, &val);
+            luaK_fixline(fs, line);
+          }
+          /* parse body: methods (no bodies) and fields */
+          while (ls->t.token != TK_END && ls->t.token != TK_EOS) {
+            if (ls->t.token == TK_FUNCTION) {
+              luaX_next(ls);  /* skip 'function' */
+              TString *mname = str_checkname(ls);
+              register_classmethod_info(ls, dname, mname);
+              /* skip params */
+              checknext(ls, '(');
+              while (ls->t.token != ')' && ls->t.token != TK_EOS) {
+                if (ls->t.token == TK_NAME) {
+                  luaX_next(ls);
+                  optional_type_annotation(ls);
+                }
+                else if (ls->t.token == TK_DOTS) luaX_next(ls);
+                if (ls->t.token == ',') luaX_next(ls);
+              }
+              checknext(ls, ')');
+              optional_type_annotation(ls);
+            }
+            else if (ls->t.token == TK_NAME) {
+              /* field or modifier: just skip */
+              luaX_next(ls);
+              if (ls->t.token == ':') {
+                luaX_next(ls);
+                parse_type(ls);
+              }
+            }
+            else if (ls->t.token == ';') luaX_next(ls);
+            else break;
+          }
+          check_match(ls, TK_END, TK_NAME, line);
+          break;
+        }
+      }
+      /* check for 'type' keyword */
+      if (ls->t.seminfo.ts == ls->typn) {
         int lk = luaX_lookahead(ls);
         if (lk == TK_NAME) {
-          /* 'type Name = ...' - type alias statement */
           typestat(ls);
           break;
         }
       }
+      /* import "module" → local module = require("module")
+         import NAME from "module" → local NAME = require("module") */
+      /* 'match' as contextual keyword (preserves string:match()) */
+      if (ls->t.seminfo.ts == ls->matchn) {
+        matchstat(ls, line);
+        break;
+      }
+      if (ls->t.seminfo.ts == ls->importn) {
+        int ilk = luaX_lookahead(ls);
+        if (ilk != TK_STRING && ilk != TK_NAME)
+          goto not_import;  /* not an import statement */
+        FuncState *fs = ls->fs;
+        luaX_next(ls);  /* skip 'import' */
+        if (ls->t.token == TK_STRING) {
+          /* import "modname" → local modname = require("modname") */
+          TString *modstr = ls->t.seminfo.ts;
+          /* extract module name from path (last component) */
+          const char *ms = getstr(modstr);
+          const char *lastdot = ms;
+          for (const char *p = ms; *p; p++)
+            if (*p == '.' || *p == '/') lastdot = p + 1;
+          TString *localname = luaX_newstring(ls, lastdot, strlen(lastdot));
+          luaX_next(ls);  /* skip string */
+          /* generate: local localname = require("modstr") */
+          new_localvar(ls, localname);
+          expdesc req, arg;
+          buildglobal(ls, luaX_newstring(ls, "require", 7), &req);
+          luaK_exp2nextreg(fs, &req);
+          int base = fs->freereg - 1;
+          codestring(&arg, modstr);
+          luaK_exp2nextreg(fs, &arg);
+          init_exp(&req, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 2));
+          luaK_fixline(fs, ls->linenumber);
+          fs->freereg = cast_byte(base + 1);
+          adjustlocalvars(ls, 1);
+        }
+        else if (ls->t.token == TK_NAME) {
+          /* import NAME from "module" */
+          TString *localname = ls->t.seminfo.ts;
+          luaX_next(ls);  /* skip NAME */
+          /* expect 'from' */
+          if (ls->t.token != TK_NAME ||
+              strcmp(getstr(ls->t.seminfo.ts), "from") != 0)
+            luaX_syntaxerror(ls, "'from' expected in import statement");
+          luaX_next(ls);  /* skip 'from' */
+          if (ls->t.token != TK_STRING)
+            luaX_syntaxerror(ls, "module name string expected");
+          TString *modstr = ls->t.seminfo.ts;
+          luaX_next(ls);  /* skip string */
+          /* generate: local NAME = require("module") */
+          new_localvar(ls, localname);
+          expdesc req, arg;
+          buildglobal(ls, luaX_newstring(ls, "require", 7), &req);
+          luaK_exp2nextreg(fs, &req);
+          int base = fs->freereg - 1;
+          codestring(&arg, modstr);
+          luaK_exp2nextreg(fs, &arg);
+          init_exp(&req, VCALL, luaK_codeABC(fs, OP_CALL, base, 2, 2));
+          luaK_fixline(fs, ls->linenumber);
+          fs->freereg = cast_byte(base + 1);
+          adjustlocalvars(ls, 1);
+        }
+        else {
+          luaX_syntaxerror(ls, "string or name expected after 'import'");
+        }
+        break;
+      }
+      not_import:
 #if defined(LUA_COMPAT_GLOBAL)
       /* compatibility code to parse global keyword when "global"
          is not reserved */
@@ -2495,6 +3956,29 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Mbuffer *buff,
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
+  /* free class name registry and field access info */
+  if (lexstate.classnames != NULL)
+    luaM_freearray(L, lexstate.classnames, lexstate.classnames_size);
+  if (lexstate.classfields != NULL)
+    luaM_freearray(L, lexstate.classfields, lexstate.classfields_size);
+  if (lexstate.classmethods != NULL)
+    luaM_freearray(L, lexstate.classmethods, lexstate.classmethods_size);
+  if (lexstate.classparents != NULL)
+    luaM_freearray(L, lexstate.classparents, lexstate.classparents_size);
+  for (int ii = 0; ii < lexstate.ninterfaces; ii++) {
+    if (lexstate.interfaces[ii].methods != NULL)
+      luaM_freearray(L, lexstate.interfaces[ii].methods,
+                     lexstate.interfaces[ii].methods_size);
+  }
+  if (lexstate.interfaces != NULL)
+    luaM_freearray(L, lexstate.interfaces, lexstate.interfaces_size);
+  for (int ii = 0; ii < lexstate.nenums; ii++) {
+    if (lexstate.enums[ii].values != NULL)
+      luaM_freearray(L, lexstate.enums[ii].values,
+                     lexstate.enums[ii].values_size);
+  }
+  if (lexstate.enums != NULL)
+    luaM_freearray(L, lexstate.enums, lexstate.enums_size);
   L->top.p--;  /* remove scanner's table */
   return cl;  /* closure is on the stack, too */
 }

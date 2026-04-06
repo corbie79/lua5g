@@ -559,6 +559,7 @@ typedef struct Upvaldesc {
 */
 typedef struct LocVar {
   TString *varname;
+  TString *typename_;  /* type annotation (NULL if none) */
   int startpc;  /* first point where variable is active */
   int endpc;    /* first point where variable is dead */
 } LocVar;
@@ -622,6 +623,8 @@ typedef struct Proto {
   LocVar *locvars;  /* information about local variables (debug information) */
   TString  *source;  /* used for debug information */
   GCObject *gclist;
+  struct JitTrace *jit;  /* JIT compiled trace (NULL if not compiled) */
+  unsigned short hotcount;  /* for-loop entry counter for auto JIT */
 } Proto;
 
 /* }================================================================== */

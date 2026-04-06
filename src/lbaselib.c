@@ -513,6 +513,202 @@ static int luaB_tostring (lua_State *L) {
 }
 
 
+/*
+** __setup_class(classTable) - set up access control metamethods
+** Called by generated code for classes with access modifiers/properties.
+*/
+static int luaB_setupclass (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TTABLE);
+  lua_settop(L, 1);  /* ensure only class table on stack */
+  luaL_setupclass(L);
+  return 0;
+}
+
+
+/*
+** __class_release(mode) - switch release mode on/off
+** In release mode, private/protected checks are skipped (zero cost).
+** Readonly and getter/setter still enforced.
+**   __class_release(true)   -- enable release mode
+**   __class_release(false)  -- enable debug mode (default)
+**   __class_release()       -- return current mode
+*/
+static int luaB_classrelease (lua_State *L) {
+  if (lua_gettop(L) == 0) {
+    lua_pushboolean(L, luaL_getclassrelease(L));
+    return 1;
+  }
+  luaL_setclassrelease(L, lua_toboolean(L, 1));
+  return 0;
+}
+
+
+/*
+** async(func) - wrap function as coroutine-based async
+** await(promise) - yield from async, resume with result
+** async_run(func, ...) - run async function to completion
+*/
+static int luaB_async (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  /* wrap: return function(...) return coroutine.create(func), ... end */
+  lua_getglobal(L, "coroutine");
+  lua_getfield(L, -1, "wrap");
+  lua_pushvalue(L, 1);  /* the async function */
+  lua_call(L, 1, 1);    /* coroutine.wrap(func) */
+  return 1;
+}
+
+static int luaB_await (lua_State *L) {
+  /* await = coroutine.yield */
+  return lua_yield(L, lua_gettop(L));
+}
+
+static int luaB_async_run (lua_State *L) {
+  /* run async function to completion, collecting results */
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  int nargs = lua_gettop(L) - 1;
+  /* create coroutine */
+  lua_State *co = lua_newthread(L);
+  lua_pushvalue(L, 1);  /* push function */
+  lua_xmove(L, co, 1);  /* move to coroutine */
+  for (int i = 0; i < nargs; i++) {
+    lua_pushvalue(L, i + 2);
+    lua_xmove(L, co, 1);
+  }
+  /* resume until done */
+  int nres;
+  while (1) {
+    int status = lua_resume(co, L, nargs, &nres);
+    if (status == LUA_OK) {
+      /* done: move results back */
+      lua_xmove(co, L, nres);
+      return nres;
+    }
+    else if (status == LUA_YIELD) {
+      /* yielded: get yielded values, process, resume */
+      /* for simple case: just resume immediately */
+      nargs = 0;
+    }
+    else {
+      /* error */
+      lua_xmove(co, L, 1);  /* move error message */
+      return lua_error(L);
+    }
+  }
+}
+
+
+/*
+** RTTI: instanceof, classname, classof, parentof
+*/
+static int luaB_instanceof (lua_State *L) {
+  if (!lua_istable(L, 1) || !lua_istable(L, 2)) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  if (!lua_getmetatable(L, 1)) { lua_pushboolean(L, 0); return 1; }
+  int depth = 0;
+  while (depth++ < 20) {
+    /* mt == class? */
+    if (lua_rawequal(L, -1, 2)) { lua_pushboolean(L, 1); return 1; }
+    /* check mt.__index */
+    if (lua_getfield(L, -1, "__index") != LUA_TTABLE) break;
+    if (lua_rawequal(L, -1, 2)) { lua_pushboolean(L, 1); return 1; }
+    /* go up: __index's metatable */
+    if (!lua_getmetatable(L, -1)) break;
+    lua_remove(L, -2); lua_remove(L, -2);
+  }
+  lua_pushboolean(L, 0);
+  return 1;
+}
+
+static int luaB_classname (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) {
+    if (lua_getfield(L, -1, "__name") == LUA_TSTRING) return 1;
+    lua_pop(L, 2);
+  }
+  lua_pushnil(L);
+  return 1;
+}
+
+static int luaB_classof (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) return 1;
+  lua_pushnil(L);
+  return 1;
+}
+
+static int luaB_parentof (lua_State *L) {
+  if (lua_istable(L, 1) && lua_getmetatable(L, 1)) {
+    if (lua_getfield(L, -1, "__index") == LUA_TTABLE) return 1;
+    lua_pop(L, 2);
+  }
+  lua_pushnil(L);
+  return 1;
+}
+
+
+/*
+** __jit_compile(func) - JIT compile a function's hot loops
+** __jit_status() - return JIT availability info
+*/
+#include "ljit.h"
+
+static int luaB_jitstatus (lua_State *L) {
+#if defined(JIT_ARCH_X64)
+  lua_pushliteral(L, "x86-64");
+#elif defined(JIT_ARCH_ARM64)
+  lua_pushliteral(L, "arm64");
+#elif defined(JIT_ARCH_X86)
+  lua_pushliteral(L, "x86");
+#elif defined(JIT_ARCH_ARM)
+  lua_pushliteral(L, "arm");
+#else
+  lua_pushliteral(L, "none");
+#endif
+  return 1;
+}
+
+
+static int luaB_jitcompile (lua_State *L) {
+  luaL_checktype(L, 1, LUA_TFUNCTION);
+  /* get the Proto from the Lua closure */
+  if (!lua_isfunction(L, 1) || lua_iscfunction(L, 1)) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "not a Lua function");
+    return 2;
+  }
+  /* access the closure's proto via debug API */
+  lua_Debug ar;
+  lua_pushvalue(L, 1);
+  lua_getinfo(L, ">S", &ar);  /* this pops the function */
+
+  /* get the function again and try to JIT its for-loops */
+  lua_pushvalue(L, 1);
+  const LClosure *cl = (const LClosure *)lua_topointer(L, -1);
+  lua_pop(L, 1);
+
+  if (cl == NULL) {
+    lua_pushboolean(L, 0);
+    lua_pushliteral(L, "cannot get closure");
+    return 2;
+  }
+
+  Proto *p = cl->p;
+  int compiled = 0;
+  int i;
+  for (i = 0; i < p->sizecode; i++) {
+    if (GET_OPCODE(p->code[i]) == OP_FORPREP) {
+      int res = luaJ_compile(L, p, i);
+      if (res == JIT_OK) compiled++;
+    }
+  }
+
+  lua_pushboolean(L, compiled > 0);
+  lua_pushinteger(L, compiled);
+  return 2;
+}
+
+
 static const luaL_Reg base_funcs[] = {
   {"assert", luaB_assert},
   {"collectgarbage", luaB_collectgarbage},
@@ -537,6 +733,17 @@ static const luaL_Reg base_funcs[] = {
   {"tostring", luaB_tostring},
   {"type", luaB_type},
   {"xpcall", luaB_xpcall},
+  {"__setup_class", luaB_setupclass},
+  {"__class_release", luaB_classrelease},
+  {"async", luaB_async},
+  {"await", luaB_await},
+  {"async_run", luaB_async_run},
+  {"instanceof", luaB_instanceof},
+  {"classname", luaB_classname},
+  {"classof", luaB_classof},
+  {"parentof", luaB_parentof},
+  {"__jit_status", luaB_jitstatus},
+  {"__jit_compile", luaB_jitcompile},
   /* placeholders */
   {LUA_GNAME, NULL},
   {"_VERSION", NULL},

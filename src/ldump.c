@@ -18,6 +18,7 @@
 #include "lapi.h"
 #include "lgc.h"
 #include "lobject.h"
+#include "lopcodes.h"
 #include "lstate.h"
 #include "ltable.h"
 #include "lundump.h"
@@ -29,6 +30,7 @@ typedef struct {
   void *data;
   size_t offset;  /* current position relative to beginning of dump */
   int strip;
+  int striptypes;  /* strip type annotations but keep debug names */
   int status;
   Table *h;  /* table to track saved strings */
   lua_Unsigned nstr;  /* counter for counting saved strings */
@@ -172,6 +174,17 @@ static void dumpCode (DumpState *D, const Proto *f) {
   dumpInt(D, f->sizecode);
   dumpAlign(D, sizeof(f->code[0]));
   lua_assert(f->code != NULL);
+  if (D->striptypes || D->strip) {
+    /* patch OP_TYPECHECK to OP_MOVE A A 0 (nop: move reg to itself) */
+    int i;
+    for (i = 0; i < f->sizecode; i++) {
+      Instruction inst = f->code[i];
+      if (GET_OPCODE(inst) == OP_TYPECHECK) {
+        int a = GETARG_A(inst);
+        f->code[i] = CREATE_ABCk(OP_MOVE, a, a, 0, 0);  /* nop */
+      }
+    }
+  }
   dumpVector(D, f->code, cast_uint(f->sizecode));
 }
 
@@ -241,6 +254,7 @@ static void dumpDebug (DumpState *D, const Proto *f) {
   dumpInt(D, n);
   for (i = 0; i < n; i++) {
     dumpString(D, f->locvars[i].varname);
+    dumpString(D, D->striptypes ? NULL : f->locvars[i].typename_);
     dumpInt(D, f->locvars[i].startpc);
     dumpInt(D, f->locvars[i].endpc);
   }
@@ -295,7 +309,8 @@ int luaU_dump (lua_State *L, const Proto *f, lua_Writer w, void *data,
   D.writer = w;
   D.offset = 0;
   D.data = data;
-  D.strip = strip;
+  D.strip = strip & 1;         /* bit 0: strip all debug info */
+  D.striptypes = strip & 2;    /* bit 1: strip type info only */
   D.status = 0;
   D.nstr = 0;
   dumpHeader(&D);
