@@ -4,6 +4,57 @@
 
 Lua5g extends Lua 5.5.0 with TypeScript/Luau-inspired type annotations, a full class system with inheritance and access control, a lightweight JIT compiler for x86-64/x86/ARMv7, and modern syntax features — all while maintaining full backward compatibility with standard Lua.
 
+## Benchmark
+
+```
+ 50M integer sum: for i = 1, 50000000 do sum = sum + i end
+
+ ╔════════════════════════╦══════════╦══════════╦═════════╗
+ ║ Engine                  ║ Time (s) ║ Mops/s   ║ vs Lua5g║
+ ╠════════════════════════╬══════════╬══════════╬═════════╣
+ ║ LuaJIT (JIT ON)        ║  0.035   ║  1,412   ║  6.5x   ║
+ ║ Lua5g JIT (x86-64)     ║  0.037   ║  1,340   ║  6.1x   ║
+ ║ LuaJIT (JIT OFF)       ║  0.203   ║    246   ║  1.1x   ║
+ ║ Lua5g interpreter      ║  0.229   ║    219   ║  1.0x   ║
+ ╚════════════════════════╩══════════╩══════════╩═════════╝
+
+ Native float array (mathx.farray) vs Lua table:
+   sum:   9.7x faster    dot product: 15.3x faster
+   sqrt:  9.8x faster    saxpy:       20.1x faster
+```
+
+## New Keywords
+
+| Keyword | Description | Example |
+|---------|-------------|---------|
+| `class` | Declare a class | `class Animal ... end` |
+| `extends` | Inherit from parent | `class Dog extends Animal` |
+| `implements` | Implement interface | `class Foo implements Bar` |
+| `interface` | Declare method contract | `interface Drawable ... end` |
+| `enum` | Named constants | `enum Color RED GREEN BLUE end` |
+| `override` | Required when overriding parent method | `override function speak(self)` |
+| `super` | Call parent class method | `super.speak(self)` |
+| `abstract` | Method without body | `abstract function area(self)` |
+| `static` | Class method (no self) | `static function create()` |
+| `operator` | Metamethod shorthand | `operator + (a, b) ... end` |
+| `property` | Getter/setter | `property hp get(self)... set(self,v)... end` |
+| `public` | Default access | `public name: string` |
+| `private` | Class methods only | `private _secret: number` |
+| `protected` | Class + subclass methods | `protected _id: number` |
+| `readonly` | Write once | `readonly species: string` |
+| `try` | Exception handling | `try ... except ... finally ... end` |
+| `match` | Pattern matching | `match x case 1 then ... end` |
+| `import` | Module import | `import "math"` |
+| `declare` | C binding type declaration | `declare class Vec2 ... end` |
+| `type` | Type alias | `type Point = {x: number}` |
+
+All new keywords are **contextual** — they work as identifiers after `.` and `:`:
+```lua
+t.class = 1              -- field access ✅
+s:match("pattern")       -- method call ✅
+local match = string.match  -- variable ✅
+```
+
 ## Quick Start
 
 ```bash
