@@ -368,6 +368,7 @@ typedef struct global_State {
   TString *strcache[STRCACHE_N][STRCACHE_M];  /* cache for strings in API */
   lua_WarnFunction warnf;  /* warning function */
   void *ud_warn;         /* auxiliary data to 'warnf' */
+  lu_byte typemode;      /* 0=default, 1=strict, 2=legacy */
   LX mainth;  /* main thread of this state */
 } global_State;
 

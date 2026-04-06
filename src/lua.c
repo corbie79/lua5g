@@ -20,6 +20,7 @@
 #include "lauxlib.h"
 #include "lualib.h"
 #include "llimits.h"
+#include "lstate.h"
 
 
 #if !defined(LUA_PROGNAME)
@@ -90,6 +91,8 @@ static void print_usage (const char *badoption) {
   lua_writestringerror(
   "usage: %s [options] [script [args]]\n"
   "Available options are:\n"
+  "  --strict  require type annotations on all locals\n"
+  "  --legacy  ignore type annotations (compatibility mode)\n"
   "  -d file   load declaration file (.d.lua)\n"
   "  -e stat   execute string 'stat'\n"
   "  -i        enter interactive mode after executing 'script'\n"
@@ -301,12 +304,21 @@ static int collectargs (char **argv, int *first) {
     if (argv[i][0] != '-')  /* not an option? */
         return args;  /* stop handling options */
     switch (argv[i][1]) {  /* else check option */
-      case '-':  /* '--' */
-        if (argv[i][2] != '\0')  /* extra characters after '--'? */
-          return has_error;  /* invalid option */
-        /* if there is a script name, it comes after '--' */
-        *first = (argv[i + 1] != NULL) ? i + 1 : 0;
-        return args;
+      case '-':  /* '--' or '--strict' or '--legacy' */
+        if (argv[i][2] == '\0') {  /* just '--' */
+          *first = (argv[i + 1] != NULL) ? i + 1 : 0;
+          return args;
+        }
+        else if (strcmp(argv[i], "--strict") == 0) {
+          args |= (1 << 8);  /* bit 8 = strict mode */
+          break;
+        }
+        else if (strcmp(argv[i], "--legacy") == 0) {
+          args |= (1 << 9);  /* bit 9 = legacy mode */
+          break;
+        }
+        else
+          return has_error;
       case '\0':  /* '-' */
         return args;  /* script "name" is '-' */
       case 'E':
@@ -899,6 +911,11 @@ static int pmain (lua_State *L) {
     lua_pushboolean(L, 1);  /* signal for libraries to ignore env. vars. */
     lua_setfield(L, LUA_REGISTRYINDEX, "LUA_NOENV");
   }
+  /* apply type mode */
+  if (args & (1 << 8))  /* --strict */
+    G(L)->typemode = LUA5G_MODE_STRICT;
+  else if (args & (1 << 9))  /* --legacy */
+    G(L)->typemode = LUA5G_MODE_LEGACY;
   luai_openlibs(L);  /* open standard libraries */
   createargtable(L, argv, argc, script);  /* create table 'arg' */
   lua_gc(L, LUA_GCRESTART);  /* start GC... */
