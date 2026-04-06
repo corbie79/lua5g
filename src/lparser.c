@@ -2360,6 +2360,10 @@ static void localstat (LexState *ls) {
   do {  /* for each variable */
     TString *vname = str_checkname(ls);  /* get its name */
     TString *typanno = optional_type_annotation(ls);  /* optional ': type' */
+    /* strict mode: require type annotation */
+    if (typanno == NULL && G(ls->L)->typemode == LUA5G_MODE_STRICT)
+      luaK_semerror(ls, "strict mode: variable '%s' must have a type annotation",
+                    getstr(vname));
     lu_byte kind = getvarattribute(ls, defkind);  /* postfixed attribute */
     vidx = new_varkind(ls, vname, kind);  /* predeclare it */
     /* store type annotation in Vardesc */
@@ -2391,7 +2395,9 @@ static void localstat (LexState *ls) {
     adjustlocalvars(ls, nvars);
   }
   checktoclose(fs, toclose);
-  /* emit OP_TYPECHECK for typed variables (after assignment) */
+  /* emit OP_TYPECHECK for typed variables (after assignment)
+     Legacy mode: skip all type checks */
+  if (G(ls->L)->typemode == LUA5G_MODE_LEGACY) goto skip_typecheck;
   if (nexps > 0) {  /* only if there are initializers */
     int i;
     for (i = 0; i < nvars; i++) {
@@ -2423,6 +2429,7 @@ static void localstat (LexState *ls) {
       }
     }
   }
+  skip_typecheck:;
 }
 
 
