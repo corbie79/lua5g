@@ -3611,7 +3611,7 @@ static void matchstat (LexState *ls, int line) {
   luaK_patchtohere(fs, jmp_end_list);
   fs->freereg = cast_byte(reg);  /* free subject */
 
-  check_match(ls, TK_END, TK_MATCH, line);
+  check_match(ls, TK_END, TK_NAME, line);
 }
 
 
@@ -3713,10 +3713,7 @@ static void statement (LexState *ls) {
       trystat(ls, line);
       break;
     }
-    case TK_MATCH: {  /* stat -> matchstat */
-      matchstat(ls, line);
-      break;
-    }
+    /* TK_MATCH removed: 'match' is contextual, handled in TK_NAME */
     case TK_DBCOLON: {  /* stat -> label */
       luaX_next(ls);  /* skip double colon */
       labelstat(ls, str_checkname(ls), line);
@@ -3811,6 +3808,11 @@ static void statement (LexState *ls) {
       }
       /* import "module" → local module = require("module")
          import NAME from "module" → local NAME = require("module") */
+      /* 'match' as contextual keyword (preserves string:match()) */
+      if (ls->t.seminfo.ts == ls->matchn) {
+        matchstat(ls, line);
+        break;
+      }
       if (ls->t.seminfo.ts == ls->importn) {
         int ilk = luaX_lookahead(ls);
         if (ilk != TK_STRING && ilk != TK_NAME)

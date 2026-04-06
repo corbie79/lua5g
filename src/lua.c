@@ -416,8 +416,8 @@ static int handle_luainit (lua_State *L) {
 */
 
 #if !defined(LUA_PROMPT)
-#define LUA_PROMPT		"> "
-#define LUA_PROMPT2		">> "
+#define LUA_PROMPT		"lua5g> "
+#define LUA_PROMPT2		"   ... "
 #endif
 
 #if !defined(LUA_MAXINPUT)
@@ -470,7 +470,66 @@ static int handle_luainit (lua_State *L) {
 #include <readline/readline.h>
 #include <readline/history.h>
 
-#define lua_initreadline(L)	((void)L, rl_readline_name="lua")
+/* Lua5g REPL completion: keywords + globals */
+static lua_State *completion_L = NULL;
+
+static const char *lua5g_keywords[] = {
+  "and","break","class","do","else","elseif","end","enum","extends",
+  "false","for","function","global","goto","if","implements","in",
+  "interface","local","match","nil","not","or","repeat","return",
+  "then","true","try","until","while",
+  "override","super","static","abstract","operator","property",
+  "private","protected","public","readonly",
+  "import","type","declare","async","await",
+  NULL
+};
+
+static char *lua5g_completion_gen (const char *text, int state) {
+  static int kw_idx, gl_done;
+  static size_t len;
+  if (state == 0) { kw_idx = 0; gl_done = 0; len = strlen(text); }
+  /* keywords first */
+  while (lua5g_keywords[kw_idx] != NULL) {
+    const char *kw = lua5g_keywords[kw_idx++];
+    if (strncmp(kw, text, len) == 0)
+      return strdup(kw);
+  }
+  /* then globals from _G */
+  if (!gl_done && completion_L != NULL) {
+    gl_done = 1;
+    lua_pushglobaltable(completion_L);
+    lua_pushnil(completion_L);
+    while (lua_next(completion_L, -2) != 0) {
+      lua_pop(completion_L, 1);  /* pop value */
+      if (lua_type(completion_L, -1) == LUA_TSTRING) {
+        const char *name = lua_tostring(completion_L, -1);
+        if (strncmp(name, text, len) == 0) {
+          char *r = strdup(name);
+          /* continue iteration next time? actually we can't pause lua_next.
+             For simplicity, just return first match from globals */
+          lua_pop(completion_L, 2);  /* key + _G */
+          return r;
+        }
+      }
+    }
+    lua_pop(completion_L, 1);  /* pop _G */
+  }
+  return NULL;
+}
+
+static char **lua5g_completion (const char *text, int start, int end) {
+  (void)start; (void)end;
+  rl_attempted_completion_over = 1;  /* don't fall back to filename completion */
+  return rl_completion_matches(text, lua5g_completion_gen);
+}
+
+static void lua5g_initreadline (lua_State *L) {
+  rl_readline_name = "lua5g";
+  completion_L = L;
+  rl_attempted_completion_function = lua5g_completion;
+}
+
+#define lua_initreadline(L)	lua5g_initreadline(L)
 #define lua_readline(buff,prompt)	((void)buff, readline(prompt))
 #define lua_saveline(line)	add_history(line)
 #define lua_freeline(line)	free(line)
