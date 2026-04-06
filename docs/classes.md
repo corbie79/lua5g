@@ -1,82 +1,87 @@
 # Class System
 
+---
+
 ## Basic Class
 
 ```lua
-class Animal
-  name: string
-  age: number
-
-  function new(self, name: string, age: number)
+class Vec2
+  function new(self, x: number, y: number)
     local inst = setmetatable({}, self)
-    inst.name = name
-    inst.age = age
+    inst.x = x
+    inst.y = y
     return inst
   end
 
-  function speak(self): string
-    return self.name .. " speaks"
+  function length(self): number
+    return math.sqrt(self.x^2 + self.y^2)
   end
 end
 
-local cat = Animal:new("Whiskers", 5)
-print(cat:speak())  -- "Whiskers speaks"
+local v = Vec2:new(3, 4)
+print(v:length())  -- 5.0
 ```
+
+---
 
 ## Inheritance
 
 ```lua
 class Dog extends Animal
-  breed: string
-
   override function speak(self): string
     return self.name .. " barks"
   end
 end
 ```
 
-## Override Rules
+### Override Rules
 
-- If parent has method `foo`, child MUST use `override function foo` to redefine
-- Without `override`: compile error
-- `override` on non-existent parent method: compile error
+- Parent has method `foo` → child **must** use `override function foo`
+- Without `override` → **compile error**
+- `override` on non-existent parent method → **compile error**
 
-## Super
+### Super
 
 ```lua
-class Dog extends Animal
-  override function speak(self): string
-    return super.speak(self) .. " and barks"
-  end
+override function speak(self): string
+  return super.speak(self) .. " and barks"
 end
 ```
 
-`super` resolves to the parent class inside method bodies.
+`super` compiles to the parent class name (zero runtime cost).
 
-## Access Modifiers
+---
 
-| Modifier | Meaning |
-|----------|---------|
-| `public` | Accessible everywhere (default) |
-| `private` | Class methods only |
-| `protected` | Class + subclass methods |
-| `readonly` | Write once (during construction), then immutable |
+## RTTI
+
+```lua
+local d = Dog:new("Rex")
+
+instanceof(d, Dog)       -- true
+instanceof(d, Animal)    -- true (walks inheritance chain)
+classname(d)             -- "Dog"
+classof(d) == Dog        -- true
+parentof(Dog) == Animal  -- true
+```
+
+---
+
+## Access Control
 
 ```lua
 class Account
-  public name: string
-  private _balance: number
-  protected _id: number
-  readonly currency: string
+  public name: string           -- accessible everywhere (default)
+  private _balance: number      -- class methods only
+  protected _id: number         -- class + subclass methods
+  readonly currency: string     -- write once, then immutable
 end
 ```
 
-Access is checked at **compile time** for typed variables, and at **runtime** for untyped:
+- **Typed variables**: checked at **compile time** (zero cost)
+- **Untyped variables**: checked at **runtime** (debug mode)
+- **Release mode**: `__class_release(true)` skips runtime checks
 
-```lua
-local acc: Account = Account:new(...)
-print(acc._balance)  -- COMPILE ERROR: cannot access private field
-```
+---
 
 ## Getter / Setter
 
@@ -94,11 +99,13 @@ class Player
 end
 
 local p = Player:new()
-print(p.hp)      -- calls getter
-p.hp = 50        -- calls setter
+print(p.hp)    -- calls getter
+p.hp = 50      -- calls setter
 ```
 
-## Static Methods
+---
+
+## Static & Abstract
 
 ```lua
 class MathUtil
@@ -109,23 +116,14 @@ class MathUtil
   end
 end
 
-MathUtil.clamp(150, 0, 100)  -- 100 (no self)
-```
+MathUtil.clamp(150, 0, 100)  -- no self
 
-## Abstract Methods
-
-```lua
 class Shape
   abstract function area(self): number
-  abstract function perimeter(self): number
-
-  function describe(self)
-    return f"Area: {self:area()}"
-  end
 end
 ```
 
-Abstract methods have no body. Subclasses are expected to implement them (checked via `implements`).
+---
 
 ## Operator Overloading
 
@@ -134,27 +132,15 @@ class Vec2
   operator + (a, b)
     return Vec2:new(a.x + b.x, a.y + b.y)
   end
-
   operator tostring (self)
     return f"({self.x}, {self.y})"
   end
 end
 ```
 
-| Operator | Metamethod |
-|----------|-----------|
-| `+` | `__add` |
-| `-` | `__sub` |
-| `*` | `__mul` |
-| `/` | `__div` |
-| `%` | `__mod` |
-| `==` | `__eq` |
-| `<` | `__lt` |
-| `<=` | `__le` |
-| `..` | `__concat` |
-| `len` | `__len` |
-| `tostring` | `__tostring` |
-| `call` | `__call` |
+Supported operators: `+` `-` `*` `/` `%` `==` `<` `<=` `..` `len` `tostring` `call`
+
+---
 
 ## Interface
 
@@ -165,20 +151,19 @@ interface Serializable
 end
 
 class Config implements Serializable
-  function serialize(self) return json.encode(self.data) end
-  function deserialize(self, data) self.data = json.decode(data) end
+  function serialize(self) ... end
+  function deserialize(self, data) ... end
+  -- missing method → compile error
 end
 ```
 
-Missing methods → compile error.
+---
 
 ## Enum
 
 ```lua
 enum Color
-  RED
-  GREEN
-  BLUE
+  RED GREEN BLUE
 end
 -- Color.RED = 1, Color.GREEN = 2, Color.BLUE = 3
 
@@ -189,33 +174,36 @@ enum HttpStatus
 end
 ```
 
+---
+
 ## Declare Class
 
-For C-bound classes that exist at runtime but need type information:
+For C-bound classes that need type information:
 
 ```lua
 -- vec2.d.lua
 declare class Vec2
   function new(self, x: number, y: number): Vec2
   function length(self): number
-  function add(self, other: Vec2): Vec2
 end
 ```
 
-Load with: `lua5g -d vec2.d.lua script.lua`
+Load with `lua5g -d vec2.d.lua script.lua`.
+
+---
 
 ## Implementation
 
-Classes compile to standard Lua table + metatable patterns:
+Classes compile to standard Lua metatable patterns — zero overhead:
 
 ```lua
 -- class Animal ... end  →
 Animal = {}
 Animal.__index = Animal
+Animal.__name = "Animal"
 
 -- class Dog extends Animal ... end  →
 Dog = setmetatable({}, {__index = Animal})
 Dog.__index = Dog
+Dog.__name = "Dog"
 ```
-
-Zero overhead compared to hand-written metatable code.

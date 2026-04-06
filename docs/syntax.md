@@ -1,51 +1,49 @@
-# Modern Syntax Extensions
+# Modern Syntax
 
-## Lambda Expressions
+---
+
+## Lambda
 
 ```lua
 local double = |x| x * 2
 local add = |x, y| x + y
-local greet = |name| f"Hello {name}!"
-
--- With type annotations
-local typed = |x: number, y: number| x + y
-
--- In higher-order functions
 table.sort(items, |a, b| a.score > b.score)
-local mapped = map(list, |x| x * 2)
 ```
 
-Compiles to: `function(x) return x * 2 end`
+Compiles to `function(x) return x * 2 end`.
+
+---
 
 ## String Interpolation
 
 ```lua
 local name = "World"
-print(f"Hello {name}!")           -- Hello World!
-print(f"1 + 2 = {result}")       -- 1 + 2 = 3
-print(f"Score: {player.score}")   -- Score: 42
+print(f"Hello {name}!")
+print(f"Score: {player.score}")
 ```
 
 Supports variable names inside `{...}`. Compiles to `OP_CONCAT`.
 
+---
+
 ## Nullable Chaining
 
 ```lua
-local name = user?.profile?.name     -- nil if any part is nil
-local count = list?.length           -- nil if list is nil
+local name = user?.profile?.name   -- nil if any part is nil
 ```
 
-Compiles to `TEST + JMP + GETFIELD` (short-circuit evaluation).
+Compiles to `TEST + JMP + GETFIELD` (short-circuit).
+
+---
 
 ## Table Destructuring
 
 ```lua
 local {x, y, z} = get_position()
 local {name, age} = user_data
-local {width, height} = config.window
 ```
 
-Compiles to: `local __tmp = expr; local x = __tmp.x; local y = __tmp.y`
+---
 
 ## Pattern Matching
 
@@ -53,69 +51,59 @@ Compiles to: `local __tmp = expr; local x = __tmp.x; local y = __tmp.y`
 match status_code
   case 200 then handle_ok()
   case 404 then handle_not_found()
-  case 500 then handle_error()
-  case _ then handle_unknown()    -- default
+  case _ then handle_unknown()
 end
 ```
 
-Compiles to `if/elseif/else` chain using `OP_EQ`.
+---
 
 ## Try / Except / Finally
 
 ```lua
 try
-  local data = parse(input)
-  process(data)
+  parse(input)
 except err then
   log_error(err)
-  send_alert(err)
 finally
-  cleanup()  -- always executes
+  cleanup()
 end
 ```
 
-- `except` block runs only on error
-- `finally` block always runs
-- `err` variable is scoped to except block
-- Compiles to `pcall` wrapper (zero overhead vs manual pcall)
+- `except` runs only on error
+- `finally` always runs
+- Compiles to `pcall` (zero overhead)
+
+---
 
 ## Import
 
 ```lua
-import "math"                  -- local math = require("math")
-import json from "dkjson"      -- local json = require("dkjson")
+import "math"                -- local math = require("math")
+import json from "dkjson"    -- local json = require("dkjson")
 ```
 
-`import` is a contextual keyword (not reserved — can still be used as variable name).
+---
 
 ## Async / Await
 
 ```lua
 local result = async_run(function()
-  local data = fetch_data()
-  await()  -- yield point
+  await()
   return process(data)
 end)
-
--- async() wraps a function as coroutine
-local fetch = async(function(url)
-  -- async logic here
-  await()
-  return data
-end)
 ```
 
-Built on Lua coroutines. Zero new VM overhead.
+Built on Lua coroutines.
 
-## Keyword Rules
+---
 
-All Lua5g keywords are **contextual** — they behave as keywords only at the start of a statement. After `.` or `:`, they become regular names:
+## Contextual Keywords
+
+All Lua5g keywords behave as regular names after `.` or `:`:
 
 ```lua
-class Foo end              -- keyword ✅
-t.class = 1                -- field name ✅
-obj:match("pattern")       -- method call ✅
-local match = string.match -- variable name ✅
+class Foo end            -- keyword
+t.class = 1              -- field ✅
+obj:match("pattern")     -- method ✅
+local match = string.match  -- variable ✅
 ```
-
-This ensures full compatibility with existing Lua code that uses these words as identifiers.
