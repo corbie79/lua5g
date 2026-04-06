@@ -590,7 +590,9 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           /* find or create string */
           ts = luaS_newlstr(ls->L, luaZ_buffer(ls->buff),
                                    luaZ_bufflen(ls->buff));
-          if (isreserved(ts))   /* reserved word? */
+          if (isreserved(ts)   /* reserved word? */
+              && ls->t.token != '.'  /* but not after '.' */
+              && ls->t.token != ':') /* or ':' */
             return ts->extra - 1 + FIRST_RESERVED;
           else {
             seminfo->ts = anchorstr(ls, ts);
