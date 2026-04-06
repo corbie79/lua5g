@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/dala-icon.svg" width="200" alt="Dala"></p>
+
 # Dala
 
 > **Lua 5.5 fork with type system, classes, JIT compiler, and modern language features.**
